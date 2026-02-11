@@ -145,6 +145,40 @@ function broadcastToClients(data) {
 // Admin Chat ID - Loaded from environment variables
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID ? parseInt(process.env.ADMIN_CHAT_ID) : null;
 
+// Log admin config on startup for debugging
+console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+console.log('🔐 Admin Configuration:');
+console.log(`   ADMIN_CHAT_ID: ${ADMIN_CHAT_ID}`);
+console.log(`   Admin Enabled: ${ADMIN_CHAT_ID !== null ? '✅ YES' : '❌ NO - SET ADMIN_CHAT_ID IN ENV'}`);
+console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+// Debug command to get your chat ID
+bot.onText(/\/getid/, async (msg) => {
+    const chatId = msg.chat.id;
+    const username = msg.from.username || msg.from.first_name || 'Unknown';
+    
+    const message = `
+🆔 <b>Your Telegram Info</b>
+
+━━━━━━━━━━━━━━━━━━━━
+👤 <b>Name:</b> ${msg.from.first_name} ${msg.from.last_name || ''}
+🆔 <b>Chat ID:</b> <code>${chatId}</code>
+📱 <b>Username:</b> @${username}
+━━━━━━━━━━━━━━━━━━━━
+
+<b>To set as admin in Zeabur:</b>
+1. Go to your Zeabur project
+2. Click on Variables/Environment
+3. Set: ADMIN_CHAT_ID = <code>${chatId}</code>
+4. Redeploy the service
+
+<b>Current Admin ID:</b> ${ADMIN_CHAT_ID || 'Not Set ❌'}
+<b>Are you admin?</b> ${chatId == ADMIN_CHAT_ID ? '✅ YES' : '❌ NO'}
+    `;
+    
+    await bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
+});
+
 // Bot Logic
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
