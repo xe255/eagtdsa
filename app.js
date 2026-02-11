@@ -290,11 +290,11 @@ function isAdmin(chatId) {
 // Store admin conversation states
 const adminStates = new Map();
 
-// Handle callback queries
+// Handle ALL callback queries in one place
 bot.on('callback_query', async (callbackQuery) => {
     const chatId = callbackQuery.message.chat.id;
     const username = callbackQuery.from.username || callbackQuery.from.first_name || 'Missing';
-    const action = callbackQuery.data;
+    const data = callbackQuery.data;
     const userInfo = {
         id: callbackQuery.from.id,
         username: callbackQuery.from.username,
@@ -302,7 +302,8 @@ bot.on('callback_query', async (callbackQuery) => {
         last_name: callbackQuery.from.last_name
     };
 
-    if (action === 'create_account') {
+    // === USER CALLBACKS ===
+    if (data === 'create_account') {
         bot.answerCallbackQuery(callbackQuery.id);
         
         // Check if user is blacklisted
@@ -464,12 +465,9 @@ ${remainingAccounts > 0 ? `✅ <b>נותרו:</b> ${remainingAccounts} חשבו�
             });
         }
     }
-});
-
-// Handle "My Accounts" callback
-bot.on('callback_query', async (callbackQuery) => {
-    if (callbackQuery.data === 'my_accounts') {
-        const chatId = callbackQuery.message.chat.id;
+    
+    // === MY ACCOUNTS CALLBACK ===
+    else if (data === 'my_accounts') {
         bot.answerCallbackQuery(callbackQuery.id);
         
         const accounts = getUserAccounts(chatId);
@@ -513,21 +511,17 @@ bot.on('callback_query', async (callbackQuery) => {
             }
         });
     }
-});
-
-// Admin callback handlers
-bot.on('callback_query', async (query) => {
-    const chatId = query.message.chat.id;
-    const data = query.data;
     
-    // Check admin permission
-    if (!isAdmin(chatId)) {
-        await bot.answerCallbackQuery(query.id, { text: '⛔ אין לך הרשאות' });
-        return;
-    }
-    
-    if (data === 'admin_stats') {
-        await bot.answerCallbackQuery(query.id);
+    // === ADMIN CALLBACKS ===
+    else if (data.startsWith('admin_')) {
+        // Check admin permission for all admin actions
+        if (!isAdmin(chatId)) {
+            await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ אין לך הרשאות' });
+            return;
+        }
+        
+        if (data === 'admin_stats') {
+            await bot.answerCallbackQuery(callbackQuery.id);
         const stats = getStats();
         
         const statsMessage = `
@@ -564,7 +558,7 @@ bot.on('callback_query', async (query) => {
     }
     
     else if (data === 'admin_users') {
-        await bot.answerCallbackQuery(query.id);
+        await bot.answerCallbackQuery(callbackQuery.id);
         const users = getAllUsers();
         
         if (users.length === 0) {
@@ -606,7 +600,7 @@ bot.on('callback_query', async (query) => {
     }
     
     else if (data.startsWith('admin_user_')) {
-        await bot.answerCallbackQuery(query.id);
+        await bot.answerCallbackQuery(callbackQuery.id);
         const targetUserId = data.replace('admin_user_', '');
         const users = getAllUsers();
         const user = users.find(u => u.chatId == targetUserId);
@@ -671,7 +665,7 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
     }
     
     else if (data.startsWith('admin_ban_')) {
-        await bot.answerCallbackQuery(query.id);
+        await bot.answerCallbackQuery(callbackQuery.id);
         const targetUserId = data.replace('admin_ban_', '');
         
         const banMessage = `
@@ -683,7 +677,7 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
         adminStates.set(chatId, {
             action: 'ban',
             targetUserId: targetUserId,
-            messageId: query.message.message_id
+            messageId: callbackQuery.message.message_id
         });
         
         await bot.sendMessage(chatId, banMessage, {
@@ -695,7 +689,7 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
     }
     
     else if (data.startsWith('admin_unban_')) {
-        await bot.answerCallbackQuery(query.id, { text: 'מסיר חסימה...' });
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'מסיר חסימה...' });
         const targetUserId = data.replace('admin_unban_', '');
         
         const success = removeFromBlacklist(targetUserId);
@@ -712,7 +706,7 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
     }
     
     else if (data.startsWith('admin_message_')) {
-        await bot.answerCallbackQuery(query.id);
+        await bot.answerCallbackQuery(callbackQuery.id);
         const targetUserId = data.replace('admin_message_', '');
         
         const messagePrompt = `
@@ -724,7 +718,7 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
         adminStates.set(chatId, {
             action: 'message',
             targetUserId: targetUserId,
-            messageId: query.message.message_id
+            messageId: callbackQuery.message.message_id
         });
         
         await bot.sendMessage(chatId, messagePrompt, {
@@ -736,7 +730,7 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
     }
     
     else if (data === 'admin_broadcast') {
-        await bot.answerCallbackQuery(query.id);
+        await bot.answerCallbackQuery(callbackQuery.id);
         const users = getAllUsers().filter(u => !u.isBlacklisted);
         
         const broadcastMessage = `
@@ -758,7 +752,7 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
         
         adminStates.set(chatId, {
             action: 'broadcast',
-            messageId: query.message.message_id
+            messageId: callbackQuery.message.message_id
         });
         
         await bot.sendMessage(chatId, broadcastMessage, {
@@ -770,7 +764,7 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
     }
     
     else if (data === 'admin_blacklist') {
-        await bot.answerCallbackQuery(query.id);
+        await bot.answerCallbackQuery(callbackQuery.id);
         const blacklist = getBlacklist();
         const allUsers = getAllUsers();
         
@@ -807,7 +801,7 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
     }
     
     else if (data === 'admin_accounts') {
-        await bot.answerCallbackQuery(query.id);
+        await bot.answerCallbackQuery(callbackQuery.id);
         const data = getLogs();
         const allAccounts = data.accounts || {};
         
@@ -851,7 +845,7 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
     }
     
     else if (data === 'admin_menu') {
-        await bot.answerCallbackQuery(query.id);
+        await bot.answerCallbackQuery(callbackQuery.id);
         
         const adminMenu = `
 🔐 <b>פאנל אדמין - EmbyIL Bot</b>
@@ -887,7 +881,7 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
         
         await bot.editMessageText(adminMenu, {
             chat_id: chatId,
-            message_id: query.message.message_id,
+            message_id: callbackQuery.message.message_id,
             parse_mode: 'HTML',
             reply_markup: keyboard
         });
