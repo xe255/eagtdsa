@@ -326,15 +326,19 @@ const adminStates = new Map();
 
 // Handle ALL callback queries in one place
 bot.on('callback_query', async (callbackQuery) => {
-    const chatId = callbackQuery.message.chat.id;
-    const username = callbackQuery.from.username || callbackQuery.from.first_name || 'Missing';
-    const data = callbackQuery.data;
-    const userInfo = {
-        id: callbackQuery.from.id,
-        username: callbackQuery.from.username,
-        first_name: callbackQuery.from.first_name,
-        last_name: callbackQuery.from.last_name
-    };
+    try {
+        const chatId = callbackQuery.message.chat.id;
+        const username = callbackQuery.from.username || callbackQuery.from.first_name || 'Missing';
+        const data = callbackQuery.data;
+        const userInfo = {
+            id: callbackQuery.from.id,
+            username: callbackQuery.from.username,
+            first_name: callbackQuery.from.first_name,
+            last_name: callbackQuery.from.last_name
+        };
+        
+        // Debug logging
+        console.log(`📞 Callback received: ${data} from user ${chatId} (Admin: ${isAdmin(chatId)})`);
 
     // === USER CALLBACKS ===
     if (data === 'create_account') {
@@ -548,11 +552,16 @@ ${remainingAccounts > 0 ? `✅ <b>נותרו:</b> ${remainingAccounts} חשבו�
     
     // === ADMIN CALLBACKS ===
     else if (data.startsWith('admin_')) {
+        console.log(`🔐 Admin callback detected: ${data}`);
+        
         // Check admin permission for all admin actions
         if (!isAdmin(chatId)) {
+            console.log(`⛔ Access denied for user ${chatId} (not admin)`);
             await bot.answerCallbackQuery(callbackQuery.id, { text: '⛔ אין לך הרשאות' });
             return;
         }
+        
+        console.log(`✅ Admin access granted for ${chatId}`);
         
         if (data === 'admin_stats') {
             await bot.answerCallbackQuery(callbackQuery.id);
@@ -879,9 +888,12 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
         }
         
         else if (data === 'admin_menu') {
-            await bot.answerCallbackQuery(callbackQuery.id);
+            console.log(`🎯 Admin menu requested by ${chatId}`);
             
-            const adminMenu = `
+            try {
+                await bot.answerCallbackQuery(callbackQuery.id);
+                
+                const adminMenu = `
 🔐 <b>פאנל אדמין - EmbyIL Bot</b>
 
 ברוך הבא לפאנל הניהול!
@@ -894,31 +906,50 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
 🚫 <b>חסומים</b> - ניהול רשימה שחורה
 💼 <b>חשבונות</b> - סטטוס כל החשבונות
 ━━━━━━━━━━━━━━━━━━━━
-            `;
-            
-            const keyboard = {
-                inline_keyboard: [
-                    [
-                        { text: '📊 סטטיסטיקות', callback_data: 'admin_stats' },
-                        { text: '👥 משתמשים', callback_data: 'admin_users' }
-                    ],
-                    [
-                        { text: '📢 שידור הודעה', callback_data: 'admin_broadcast' },
-                        { text: '💼 חשבונות', callback_data: 'admin_accounts' }
-                    ],
-                    [
-                        { text: '🚫 חסומים', callback_data: 'admin_blacklist' },
-                        { text: '🌐 Dashboard', url: `http://localhost:${port}` }
+                `;
+                
+                const keyboard = {
+                    inline_keyboard: [
+                        [
+                            { text: '📊 סטטיסטיקות', callback_data: 'admin_stats' },
+                            { text: '👥 משתמשים', callback_data: 'admin_users' }
+                        ],
+                        [
+                            { text: '📢 שידור הודעה', callback_data: 'admin_broadcast' },
+                            { text: '💼 חשבונות', callback_data: 'admin_accounts' }
+                        ],
+                        [
+                            { text: '🚫 חסומים', callback_data: 'admin_blacklist' },
+                            { text: '🌐 Dashboard', url: `http://localhost:${port}` }
+                        ]
                     ]
-                ]
-            };
-            
-            await bot.editMessageText(adminMenu, {
-                chat_id: chatId,
-                message_id: callbackQuery.message.message_id,
-                parse_mode: 'HTML',
-                reply_markup: keyboard
-            });
+                };
+                
+                await bot.sendMessage(chatId, adminMenu, {
+                    parse_mode: 'HTML',
+                    reply_markup: keyboard
+                });
+                
+                console.log(`✅ Admin menu sent to ${chatId}`);
+            } catch (error) {
+                console.error(`❌ Error showing admin menu:`, error);
+                await bot.sendMessage(chatId, `❌ שגיאה בפתיחת תפריט האדמין: ${error.message}`);
+            }
+        }
+    }
+    
+    // Catch unhandled callbacks
+    else {
+        console.log(`⚠️ Unhandled callback: ${data} from user ${chatId}`);
+        await bot.answerCallbackQuery(callbackQuery.id, { text: 'פעולה לא זוהתה' });
+    }
+    
+    } catch (error) {
+        console.error(`❌ Error in callback handler:`, error);
+        try {
+            await bot.answerCallbackQuery(callbackQuery.id, { text: 'שגיאה' });
+        } catch (e) {
+            console.error('Failed to answer callback query:', e);
         }
     }
 });
