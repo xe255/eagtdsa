@@ -2,77 +2,28 @@
 
 ## Overview
 
-The bot now includes a comprehensive admin panel accessible only to authorized administrators. The admin panel provides full control over users, statistics, broadcasting, and system management.
+The bot includes a comprehensive **button-based admin panel** accessible only to authorized administrators. All admin features are accessible through interactive buttons - no text commands needed!
 
 ## Access Control
 
 Only users with the `ADMIN_CHAT_ID` (set in `.env` file) can access admin features.
 
-## Admin Commands
+The admin panel button appears automatically in the main menu for authorized administrators.
 
-### Main Commands
+## Accessing the Admin Panel
 
-#### `/admin`
-Opens the main admin panel with an interactive keyboard menu.
+### From Main Menu
+1. Send `/start` to the bot
+2. Click the **🔐 פאנל אדמין** button (visible only to admin)
+3. Navigate through the button menu
 
-**Features:**
-- 📊 Statistics
-- 👥 User Management
-- 📢 Broadcasting
-- 💼 Account Management
-- 🚫 Blacklist Management
-- 🌐 Dashboard Access
-
-#### `/list`
-Quick command to list all users with their details.
-
-**Displays:**
-- User name (clickable link)
-- Telegram username
-- Chat ID
-- Account statistics
-- Blacklist status
-
-### User Management Commands
-
-#### `/ban <user_id> [reason]`
-Block a user from using the bot.
-
-**Example:**
-```
-/ban 123456789 Spam
-/ban 987654321
-```
-
-**What happens:**
-- User is added to blacklist
-- User cannot create accounts
-- User cannot interact with bot
-- Reason is logged for reference
-
-#### `/unban <user_id>`
-Remove a user from the blacklist.
-
-**Example:**
-```
-/unban 123456789
-```
-
-### Broadcasting Commands
-
-#### `/broadcast <message>`
-Send a message to all non-blacklisted users.
-
-**Example:**
-```
-/broadcast שלום לכולם! יש לנו עדכון חשוב בשירות
-```
-
-**Features:**
-- Sends to all active users
-- Skips blacklisted users
-- Shows delivery statistics
-- Includes rate limiting to avoid Telegram restrictions
+**Main Menu Features:**
+- 📊 **Statistics** - View system statistics
+- 👥 **User Management** - Browse and manage users
+- 📢 **Broadcasting** - Send messages to all users
+- 💼 **Account Management** - View account statistics
+- 🚫 **Blacklist Management** - Manage blocked users
+- 🌐 **Dashboard Access** - Link to web dashboard
 
 ## Admin Panel Features
 
@@ -97,28 +48,38 @@ Send a message to all non-blacklisted users.
 
 ### 👥 User Management
 
-**Features:**
-- View all users (paginated)
-- See user details:
-  - Name and Telegram handle
-  - Chat ID
-  - Number of accounts (active/total)
-  - Blacklist status
-- Clickable links to open chat with users
+**How it works:**
+1. Click **👥 משתמשים** in admin panel
+2. See list of all users as buttons
+3. Click on any user to view details
+
+**User Details View:**
+- Full name with clickable Telegram link
+- User ID
+- Telegram username
+- Account count and status
+- Last activity
+- Blacklist status
+
+**Available Actions:**
+- 🚫 **Ban User** - Block access (with conversation for reason)
+- ✅ **Unban User** - Remove from blacklist
+- 💬 **Send Message** - Direct message to user
 
 ### 📢 Broadcasting
 
-**Features:**
-- Send messages to all users
-- Automatic blacklist filtering
-- Delivery statistics
-- Rate limiting protection
-- Progress tracking
+**How it works:**
+1. Click **📢 שידור הודעה** in admin panel
+2. Bot shows recipient count and confirmation
+3. Send your message text
+4. Bot broadcasts to all active users
+5. View delivery statistics
 
-**Usage:**
-1. Click "📢 שידור הודעה" in admin panel
-2. Follow instructions to use `/broadcast` command
-3. View delivery statistics when complete
+**Features:**
+- Automatic blacklist filtering
+- Real-time delivery statistics
+- Rate limiting protection
+- Shows sent/failed/blocked counts
 
 ### 💼 Account Management
 
@@ -132,16 +93,28 @@ Send a message to all non-blacklisted users.
 
 ### 🚫 Blacklist Management
 
+**How it works:**
+1. Click **🚫 חסומים** in admin panel
+2. See all blocked users as buttons
+3. Click on user to view details and unban
+
 **Features:**
 - View all blacklisted users
 - See blacklist reasons
-- See when users were blocked
-- Ban/unban users with commands
+- One-click access to user details
+- Quick unban functionality
+
+**Banning a User:**
+1. Go to user management
+2. Select user from list
+3. Click **🚫 חסום משתמש**
+4. Type the reason for blocking
+5. User is immediately blocked
 
 **User Experience for Blacklisted Users:**
 - Cannot create new accounts
 - Cannot use bot features
-- Receives "🚫 אינך יכול להשתמש בבוט זה" message
+- Receives "🚫 אינך מורשה להשתמש בבוט זה" message
 
 ## Security Features
 
@@ -227,12 +200,21 @@ All admin actions are tracked in logs for:
 
 ## Admin Panel Workflow
 
-1. **Start:** `/admin` - Open main menu
-2. **Review:** Check statistics and user activity
-3. **Manage:** Ban/unban users as needed
-4. **Communicate:** Use broadcast for announcements
-5. **Monitor:** Review account statistics
-6. **Maintain:** Manage blacklist regularly
+1. **Start:** Send `/start` and click **🔐 פאנל אדמין**
+2. **Review:** Check statistics and user activity via buttons
+3. **Manage:** Click users to view details and take actions
+4. **Communicate:** Use broadcast button for announcements
+5. **Monitor:** Review account statistics through buttons
+6. **Maintain:** Manage blacklist through user details
+
+## Button Navigation
+
+All features are accessible through buttons:
+- ✅ **No text commands needed**
+- ✅ **Visual menu system**
+- ✅ **Back buttons for easy navigation**
+- ✅ **Confirmation prompts for sensitive actions**
+- ✅ **Real-time feedback**
 
 ## Future Enhancements
 
