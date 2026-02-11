@@ -40,7 +40,39 @@ if (!token) {
 }
 
 // --- Initialize Bot ---
-const bot = new TelegramBot(token, { polling: true });
+const bot = new TelegramBot(token, { 
+    polling: {
+        interval: 300,
+        autoStart: true,
+        params: {
+            timeout: 10
+        }
+    }
+});
+
+// Handle polling errors gracefully
+bot.on('polling_error', (error) => {
+    // Ignore old callback query errors - these happen when bot restarts
+    if (error.code === 'ETELEGRAM') {
+        if (error.message.includes('query is too old') || 
+            error.message.includes('query ID is invalid')) {
+            console.log('⚠️  Ignoring stale callback query (bot was restarted)');
+            return;
+        }
+    }
+    // Log other errors but don't crash
+    console.error('❌ Polling error:', error.message);
+});
+
+// Catch unhandled errors to prevent crashes
+process.on('unhandledRejection', (reason, promise) => {
+    if (reason && reason.code === 'ETELEGRAM' && reason.message.includes('query is too old')) {
+        console.log('⚠️  Caught stale callback query');
+        return;
+    }
+    console.error('Unhandled Rejection:', reason);
+});
+
 console.log('הבוט פועל...');
 
 // Store WebSocket clients
