@@ -1,6 +1,6 @@
 const { chromium } = require('playwright');
 const TempMailAPI = require('./tinyhost');
-const { generateNumericString, generateUsername5, generateStrongPassword } = require('./utils');
+const { generateNumericString, generateUsername5, generateStrongPassword } = require('../utils');
 
 async function run(statusCallback = () => { }) {
     const originalLog = console.log;
