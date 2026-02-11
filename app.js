@@ -282,8 +282,7 @@ bot.onText(/\/admin/, async (msg) => {
                 { text: '💼 חשבונות', callback_data: 'admin_accounts' }
             ],
             [
-                { text: '🚫 חסומים', callback_data: 'admin_blacklist' },
-                { text: '🌐 Dashboard', url: `http://localhost:${port}` }
+                { text: '🚫 חסומים', callback_data: 'admin_blacklist' }
             ]
         ]
     };
@@ -446,6 +445,46 @@ bot.onText(/\/accounts/, async (msg) => {
     `;
     
     await bot.sendMessage(chatId, accountsMessage, { parse_mode: 'HTML' });
+});
+
+// Broadcast Command
+bot.onText(/\/broadcast/, async (msg) => {
+    const chatId = msg.chat.id;
+    
+    if (!isAdmin(chatId)) {
+        await bot.sendMessage(chatId, '⛔ אין לך הרשאות.');
+        return;
+    }
+    
+    const users = getAllUsers().filter(u => !u.isBlacklisted);
+    
+    const broadcastMessage = `
+📢 <b>שידור הודעה</b>
+
+שלח את ההודעה שברצונך לשדר לכל המשתמשים:
+
+━━━━━━━━━━━━━━━━━━━━
+👥 <b>יקבלו:</b> ${users.length} משתמשים
+🚫 <b>חסומים:</b> ${getAllUsers().length - users.length}
+
+⚠️ <b>שים לב:</b>
+• ההודעה תישלח לכל המשתמשים הפעילים
+• משתמשים חסומים לא יקבלו את ההודעה
+• התהליך עשוי לקחת זמן
+
+<i>שלח את ההודעה או שלח "ביטול" לביטול</i>
+    `;
+    
+    adminStates.set(chatId, {
+        action: 'broadcast'
+    });
+    
+    await bot.sendMessage(chatId, broadcastMessage, {
+        parse_mode: 'HTML',
+        reply_markup: {
+            inline_keyboard: [[{ text: '❌ ביטול', callback_data: 'admin_menu' }]]
+        }
+    });
 });
 
 // Bot Logic
@@ -1188,8 +1227,7 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
                             { text: '💼 חשבונות', callback_data: 'admin_accounts' }
                         ],
                         [
-                            { text: '🚫 חסומים', callback_data: 'admin_blacklist' },
-                            { text: '🌐 Dashboard', url: `http://localhost:${port}` }
+                            { text: '🚫 חסומים', callback_data: 'admin_blacklist' }
                         ]
                     ]
                 };
