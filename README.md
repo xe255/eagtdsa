@@ -57,6 +57,13 @@ npm install
 2. Copy your user ID
 3. Add it to your `.env` file as `ADMIN_CHAT_ID`
 
+### Required group (users must join to use the bot)
+
+1. Create or use a Telegram group and add your bot to the group.
+2. In the group, send `/getgroupid` (as the admin). The bot will reply with the group ID.
+3. In `.env` set `REQUIRED_GROUP_ID` to that ID and `REQUIRED_GROUP_INVITE` to your group invite link (e.g. `https://t.me/+F7ywFh8iVpVjODBk`).
+4. Restart the bot. Users who are not in the group will be asked to join before they can use the bot; if they leave the group, the bot will ask them to rejoin.
+
 ## Running the Application
 
 ### Option 1: Using start.bat (Windows)
