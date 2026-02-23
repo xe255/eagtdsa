@@ -142,19 +142,70 @@ function broadcastToClients(data) {
     });
 }
 
-// Admin Chat ID - Loaded from environment variables
-const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID ? parseInt(process.env.ADMIN_CHAT_ID) : null;
+// Admin Chat IDs - Loaded from environment variables. Use ADMIN_CHAT_IDS (comma-separated) for multiple admins, or ADMIN_CHAT_ID for single.
+const parseAdminIds = () => {
+    if (process.env.ADMIN_CHAT_IDS) {
+        return process.env.ADMIN_CHAT_IDS.split(',')
+            .map(s => parseInt(s.trim(), 10))
+            .filter(n => !isNaN(n));
+    }
+    const single = process.env.ADMIN_CHAT_ID ? parseInt(process.env.ADMIN_CHAT_ID) : null;
+    return single !== null ? [single] : [];
+};
+const ADMIN_CHAT_IDS_ARRAY = parseAdminIds();
+const ADMIN_CHAT_ID = ADMIN_CHAT_IDS_ARRAY[0] ?? null; // backward compat for getid message etc.
+
+// Required group: users must be members to use the bot. Bot must be added to the group; get ID with /getgroupid in the group.
+const REQUIRED_GROUP_ID = process.env.REQUIRED_GROUP_ID ? process.env.REQUIRED_GROUP_ID.trim() : null;
+const REQUIRED_GROUP_INVITE = process.env.REQUIRED_GROUP_INVITE || 'https://t.me/+F7ywFh8iVpVjODBk';
 
 // Log admin config on startup for debugging
 console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 console.log('🔐 Admin Configuration:');
-console.log(`   ADMIN_CHAT_ID: ${ADMIN_CHAT_ID}`);
-console.log(`   Admin Enabled: ${ADMIN_CHAT_ID !== null ? '✅ YES' : '❌ NO - SET ADMIN_CHAT_ID IN ENV'}`);
+console.log(`   Admin IDs: ${ADMIN_CHAT_IDS_ARRAY.length ? ADMIN_CHAT_IDS_ARRAY.join(', ') : 'none'}`);
+console.log(`   Admin Enabled: ${ADMIN_CHAT_IDS_ARRAY.length > 0 ? '✅ YES' : '❌ NO - SET ADMIN_CHAT_ID OR ADMIN_CHAT_IDS IN ENV'}`);
+console.log(`   Required Group: ${REQUIRED_GROUP_ID ? '✅ YES (users must join to use bot)' : '❌ NO'}`);
 console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+// Notify all admins (e.g. new user / new account alerts). Silently skip if no admins or send fails.
+async function notifyAdmins(message, options = { parse_mode: 'HTML' }) {
+    for (const adminId of ADMIN_CHAT_IDS_ARRAY) {
+        try {
+            await bot.sendMessage(adminId, message, options);
+        } catch (e) {
+            console.error(`Failed to notify admin ${adminId}:`, e.message);
+        }
+    }
+}
+
+// Helper: format last activity for display
+function formatLastActivity(timestamp) {
+    if (!timestamp) return 'לא ידוע';
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+    if (diffMins < 1) return 'עכשיו';
+    if (diffMins < 60) return `לפני ${diffMins} דקות`;
+    if (diffHours < 24) return `לפני ${diffHours} שעות`;
+    if (diffDays < 7) return `לפני ${diffDays} ימים`;
+    return date.toLocaleString('he-IL');
+}
 
 // Help Command
 bot.onText(/\/help/, async (msg) => {
     const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    if (!isAdmin(chatId) && isBlacklisted(chatId)) {
+        await bot.sendMessage(chatId, '🚫 אינך מורשה להשתמש בבוט זה.');
+        return;
+    }
+    if (REQUIRED_GROUP_ID && !isAdmin(chatId) && !(await hasJoinedGroup(userId))) {
+        await sendJoinRequiredMessage(chatId);
+        return;
+    }
     const isAdminUser = isAdmin(chatId);
     
     let helpMessage = `
@@ -221,6 +272,15 @@ bot.onText(/\/help/, async (msg) => {
 // Debug command to get your chat ID
 bot.onText(/\/getid/, async (msg) => {
     const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    if (!isAdmin(chatId) && isBlacklisted(chatId)) {
+        await bot.sendMessage(chatId, '🚫 אינך מורשה להשתמש בבוט זה.');
+        return;
+    }
+    if (REQUIRED_GROUP_ID && !isAdmin(chatId) && !(await hasJoinedGroup(userId))) {
+        await sendJoinRequiredMessage(chatId);
+        return;
+    }
     const username = msg.from.username || msg.from.first_name || 'Unknown';
     
     const message = `
@@ -238,11 +298,24 @@ bot.onText(/\/getid/, async (msg) => {
 3. Set: ADMIN_CHAT_ID = <code>${chatId}</code>
 4. Redeploy the service
 
-<b>Current Admin ID:</b> ${ADMIN_CHAT_ID || 'Not Set ❌'}
-<b>Are you admin?</b> ${chatId == ADMIN_CHAT_ID ? '✅ YES' : '❌ NO'}
+<b>Admin IDs:</b> ${ADMIN_CHAT_IDS_ARRAY.length ? ADMIN_CHAT_IDS_ARRAY.join(', ') : 'Not Set ❌'}
+<b>Are you admin?</b> ${isAdmin(chatId) ? '✅ YES' : '❌ NO'}
     `;
     
     await bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
+});
+
+// Get group ID (admin only, run inside the required group to get REQUIRED_GROUP_ID for .env)
+bot.onText(/\/getgroupid/, async (msg) => {
+    const chatId = msg.chat.id;
+    if (!isAdmin(chatId)) return;
+    const type = msg.chat.type;
+    if (type !== 'group' && type !== 'supergroup') {
+        await bot.sendMessage(chatId, '❌ שלח את הפקודה הזו מתוך הקבוצה שאתה רוצה לחייב הצטרפות אליה.');
+        return;
+    }
+    const groupId = msg.chat.id.toString();
+    await bot.sendMessage(chatId, `✅ <b>Group ID:</b> <code>${groupId}</code>\n\nהוסף ל-.env:\nREQUIRED_GROUP_ID=${groupId}\nREQUIRED_GROUP_INVITE=https://t.me/+F7ywFh8iVpVjODBk`, { parse_mode: 'HTML' });
 });
 
 // Admin Panel Command
@@ -354,13 +427,14 @@ bot.onText(/\/users/, async (msg) => {
         const displayName = user.firstName + (user.lastName ? ' ' + user.lastName : '');
         const blacklistIcon = user.isBlacklisted ? '🚫 ' : '✅ ';
         const accountsInfo = `(${user.activeAccounts}/${user.accountCount})`;
+        const lastActive = formatLastActivity(user.lastAction);
         
         message += `${index + 1}. ${blacklistIcon}${displayName} ${accountsInfo}\n`;
         message += `   ID: <code>${user.chatId}</code>\n`;
         if (user.telegramUsername) {
             message += `   @${user.telegramUsername}\n`;
         }
-        message += `\n`;
+        message += `   📅 פעילות אחרונה: ${lastActive}\n\n`;
     });
     
     await bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
@@ -490,6 +564,15 @@ bot.onText(/\/broadcast/, async (msg) => {
 // Bot Logic
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    if (!isAdmin(chatId) && isBlacklisted(chatId)) {
+        await bot.sendMessage(chatId, '🚫 אינך מורשה להשתמש בבוט זה.');
+        return;
+    }
+    if (REQUIRED_GROUP_ID && !isAdmin(chatId) && !(await hasJoinedGroup(userId))) {
+        await sendJoinRequiredMessage(chatId);
+        return;
+    }
     const username = msg.from.username || msg.from.first_name || 'Missing';
     const userInfo = {
         id: msg.from.id,
@@ -498,6 +581,8 @@ bot.onText(/\/start/, async (msg) => {
         last_name: msg.from.last_name
     };
 
+    const logs = getLogs();
+    const isNewUser = !(logs.logs || []).some(l => String(l.chatId) === String(chatId));
     addLog(chatId, username, 'start', 'success', null, userInfo);
     
     // Broadcast new user to dashboard
@@ -509,6 +594,14 @@ bot.onText(/\/start/, async (msg) => {
         timestamp: new Date().toISOString(),
         telegramUsername: msg.from.username
     });
+
+    // Notify admins of new user (first-time /start)
+    if (isNewUser && !isAdmin(chatId)) {
+        const displayName = (msg.from.first_name || '') + (msg.from.last_name ? ' ' + msg.from.last_name : '');
+        await notifyAdmins(
+            `🆕 <b>משתמש חדש</b>\n\n👤 ${escapeHTML(displayName || username)}\n🆔 <code>${chatId}</code>\n📱 @${username || '-'}`
+        );
+    }
 
     const accountCount = getAccountCount(chatId);
     const remainingSlots = 3 - accountCount;
@@ -567,6 +660,15 @@ ${remainingSlots > 0 ? `• נותרו: ${remainingSlots} חשבונות זמי�
 // --- Handle /myaccounts Command ---
 bot.onText(/\/myaccounts/, async (msg) => {
     const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    if (!isAdmin(chatId) && isBlacklisted(chatId)) {
+        await bot.sendMessage(chatId, '🚫 אינך מורשה להשתמש בבוט זה.');
+        return;
+    }
+    if (REQUIRED_GROUP_ID && !isAdmin(chatId) && !(await hasJoinedGroup(userId))) {
+        await sendJoinRequiredMessage(chatId);
+        return;
+    }
     const accounts = getUserAccounts(chatId);
     
     if (accounts.length === 0) {
@@ -626,7 +728,38 @@ bot.onText(/\/myaccounts/, async (msg) => {
 
 // Check if user is admin
 function isAdmin(chatId) {
-    return chatId == ADMIN_CHAT_ID;
+    return ADMIN_CHAT_IDS_ARRAY.some(id => id == chatId);
+}
+
+// Check if user is a member of the required group (creator, administrator, member, restricted). Bot must be in the group.
+async function hasJoinedGroup(userId) {
+    if (!REQUIRED_GROUP_ID) return true;
+    try {
+        const member = await bot.getChatMember(REQUIRED_GROUP_ID, userId);
+        const status = (member && member.status) ? member.status.toLowerCase() : '';
+        return ['creator', 'administrator', 'member', 'restricted'].includes(status);
+    } catch (e) {
+        return false;
+    }
+}
+
+async function sendJoinRequiredMessage(chatId) {
+    const message = `
+🔒 <b>נדרשת הצטרפות לקבוצה</b>
+
+כדי להשתמש בבוט עליך להצטרף לקבוצה שלנו.
+
+👇 <b>הצטרף כאן:</b>
+${REQUIRED_GROUP_INVITE}
+
+לאחר ההצטרפה שלח /start שוב.
+
+⚠️ אם עזבת את הקבוצה – הבוט יפסיק לעבוד עד שתצטרף מחדש.
+    `;
+    await bot.sendMessage(chatId, message, {
+        parse_mode: 'HTML',
+        disable_web_page_preview: false
+    });
 }
 
 // Store admin conversation states
@@ -644,6 +777,20 @@ bot.on('callback_query', async (callbackQuery) => {
             first_name: callbackQuery.from.first_name,
             last_name: callbackQuery.from.last_name
         };
+        
+        // Block blacklisted users from any bot interaction (except they never reach admin callbacks)
+        if (!isAdmin(chatId) && isBlacklisted(chatId)) {
+            bot.answerCallbackQuery(callbackQuery.id);
+            await bot.sendMessage(chatId, '🚫 אינך מורשה להשתמש בבוט זה.');
+            return;
+        }
+        // Require group membership for non-admins
+        const userId = callbackQuery.from.id;
+        if (REQUIRED_GROUP_ID && !isAdmin(chatId) && !(await hasJoinedGroup(userId))) {
+            bot.answerCallbackQuery(callbackQuery.id);
+            await sendJoinRequiredMessage(chatId);
+            return;
+        }
         
         // Debug logging
         console.log(`📞 Callback received: ${data} from user ${chatId} (Admin: ${isAdmin(chatId)})`);
@@ -746,8 +893,32 @@ bot.on('callback_query', async (callbackQuery) => {
             }
         };
 
-        try {
-            const result = await run(updateStatus);
+        const maxAttempts = 3;
+        const retryDelayMs = 2500;
+        let result = null;
+        let lastError = null;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                result = await run(updateStatus);
+                break;
+            } catch (e) {
+                lastError = e;
+                if (attempt < maxAttempts) {
+                    await new Promise(r => setTimeout(r, retryDelayMs));
+                }
+            }
+        }
+        if (lastError && !result) {
+            addLog(chatId, username, 'create_account', 'failed', lastError.message, userInfo);
+            clearProgress(chatId);
+            await bot.sendMessage(chatId, `❌ <b>ההרשמה נכשלה:</b> ${escapeHTML(lastError.message)}`, { parse_mode: 'HTML' });
+            broadcastToClients({
+                type: 'account_failed',
+                chatId: chatId,
+                username: username,
+                error: lastError.message
+            });
+        } else if (result) {
             addLog(chatId, username, 'create_account', 'success', result, userInfo);
             clearProgress(chatId);
             
@@ -797,18 +968,10 @@ ${remainingAccounts > 0 ? `✅ <b>נותרו:</b> ${remainingAccounts} חשבו�
                 chatId: chatId,
                 username: username
             });
-        } catch (error) {
-            addLog(chatId, username, 'create_account', 'failed', error.message, userInfo);
-            clearProgress(chatId);
-            await bot.sendMessage(chatId, `❌ <b>ההרשמה נכשלה:</b> ${escapeHTML(error.message)}`, { parse_mode: 'HTML' });
-            
-            // Broadcast failure
-            broadcastToClients({
-                type: 'account_failed',
-                chatId: chatId,
-                username: username,
-                error: error.message
-            });
+            // Notify admins of new account
+            await notifyAdmins(
+                `✅ <b>חשבון חדש נוצר</b>\n\n👤 ${escapeHTML(username)}\n🆔 <code>${chatId}</code>\n📧 ${escapeHTML(result.embyUsername)}`
+            );
         }
     }
     
@@ -908,7 +1071,7 @@ ${remainingAccounts > 0 ? `✅ <b>נותרו:</b> ${remainingAccounts} חשבו�
             });
         }
         
-        else if (data === 'admin_users') {
+        else if (data === 'admin_users' || data.startsWith('admin_users_page_')) {
         await bot.answerCallbackQuery(callbackQuery.id);
         const users = getAllUsers();
         
@@ -921,27 +1084,39 @@ ${remainingAccounts > 0 ? `✅ <b>נותרו:</b> ${remainingAccounts} חשבו�
             return;
         }
         
-        // Show users with buttons to view details
         const pageSize = 8;
+        const page = data === 'admin_users' ? 0 : parseInt(data.replace('admin_users_page_', ''), 10) || 0;
+        const totalPages = Math.ceil(users.length / pageSize);
+        const pageIndex = Math.max(0, Math.min(page, totalPages - 1));
+        const pageUsers = users.slice(pageIndex * pageSize, pageIndex * pageSize + pageSize);
+        
         let message = `👥 <b>רשימת משתמשים (${users.length})</b>\n\n`;
         message += `<i>לחץ על משתמש לצפייה בפרטים ופעולות</i>\n`;
+        message += `\n<i>עמוד ${pageIndex + 1}/${totalPages} • פעילות אחרונה מצוינת ליד כל משתמש</i>\n`;
         
         const keyboard = [];
-        users.slice(0, pageSize).forEach((user) => {
+        pageUsers.forEach((user) => {
             const displayName = user.firstName + (user.lastName ? ' ' + user.lastName : '');
             const blacklistIcon = user.isBlacklisted ? '🚫 ' : '';
             const accountsInfo = ` (${user.activeAccounts}/${user.accountCount})`;
+            const lastActive = formatLastActivity(user.lastAction);
             
             keyboard.push([{
-                text: `${blacklistIcon}${displayName}${accountsInfo}`,
+                text: `${blacklistIcon}${displayName}${accountsInfo} • ${lastActive}`,
                 callback_data: `admin_user_${user.chatId}`
             }]);
         });
         
-        if (users.length > pageSize) {
-            message += `\n<i>מציג ${pageSize} מתוך ${users.length} ראשונים</i>`;
+        const navRow = [];
+        if (pageIndex > 0) {
+            navRow.push({ text: '◀️ הקודם', callback_data: `admin_users_page_${pageIndex - 1}` });
         }
-        
+        if (pageIndex < totalPages - 1) {
+            navRow.push({ text: 'הבא ▶️', callback_data: `admin_users_page_${pageIndex + 1}` });
+        }
+        if (navRow.length > 0) {
+            keyboard.push(navRow);
+        }
         keyboard.push([{ text: '🔙 חזרה לתפריט', callback_data: 'admin_menu' }]);
         
             await bot.sendMessage(chatId, message, {
@@ -993,7 +1168,9 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
             });
         }
         
-        userMessage += `\n📅 <b>פעילות אחרונה:</b> ${user.lastAction}`;
+        const lastActionDate = user.lastAction ? new Date(user.lastAction) : null;
+        const lastActionStr = lastActionDate && !isNaN(lastActionDate.getTime()) ? lastActionDate.toLocaleString('he-IL') : 'לא ידוע';
+        userMessage += `\n📅 <b>פעילות אחרונה:</b> ${formatLastActivity(user.lastAction)} (${lastActionStr})`;
         
         const keyboard = [];
         
@@ -1377,10 +1554,16 @@ bot.on('message', async (msg) => {
     // Regular message handling for non-admins or admins not in conversation
     if (msg.text && !msg.text.startsWith('/')) {
         const chatId = msg.chat.id;
+        const userId = msg.from.id;
         
         // Block blacklisted users
         if (isBlacklisted(chatId)) {
-            bot.sendMessage(chatId, '🚫 אינך יכול להשתמש בבוט זה.');
+            await bot.sendMessage(chatId, '🚫 אינך יכול להשתמש בבוט זה.');
+            return;
+        }
+        // Require group membership for non-admins
+        if (REQUIRED_GROUP_ID && !isAdmin(chatId) && !(await hasJoinedGroup(userId))) {
+            await sendJoinRequiredMessage(chatId);
             return;
         }
         

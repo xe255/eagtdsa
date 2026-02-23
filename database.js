@@ -392,6 +392,11 @@ function getAllUsers() {
                     activeAccounts: accounts.filter(a => a.active).length,
                     isBlacklisted: isBlacklisted(log.chatId)
                 });
+            } else {
+                const existing = usersMap.get(log.chatId);
+                if (new Date(log.timestamp) > new Date(existing.lastAction)) {
+                    existing.lastAction = log.timestamp;
+                }
             }
         }
     });
