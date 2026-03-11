@@ -153,6 +153,9 @@ function broadcastToClients(data) {
     });
 }
 
+// Access code for whitelist self-entry. Set ACCESS_CODE in env to change it.
+const ACCESS_CODE = (process.env.ACCESS_CODE || 'david').trim();
+
 // Admin Chat IDs - Loaded from environment variables. Use ADMIN_CHAT_IDS (comma-separated) for multiple admins, or ADMIN_CHAT_ID for single.
 const parseAdminIds = () => {
     if (process.env.ADMIN_CHAT_IDS) {
@@ -618,7 +621,7 @@ bot.onText(/\/start/, async (msg) => {
         return;
     }
     if (isWhitelistBlocked(chatId)) {
-        await bot.sendMessage(chatId, '🔒 <b>גישה מוגבלת</b>\n\nהבוט פועל במצב רשימה לבנה. פנה למנהל הבוט לקבלת גישה.', { parse_mode: 'HTML' });
+        await sendWhitelistBlockedMessage(chatId);
         return;
     }
     const username = msg.from.username || msg.from.first_name || 'Missing';
@@ -779,6 +782,18 @@ function isWhitelistBlocked(chatId) {
     if (isAdmin(chatId)) return false;
     if (!isWhitelistEnabled()) return false;
     return !isWhitelisted(chatId);
+}
+
+async function sendWhitelistBlockedMessage(chatId) {
+    await bot.sendMessage(chatId,
+        '🔒 <b>גישה מוגבלת</b>\n\nהבוט פועל במצב רשימה לבנה.\nאם יש לך קוד גישה, לחץ על הכפתור למטה.',
+        {
+            parse_mode: 'HTML',
+            reply_markup: {
+                inline_keyboard: [[{ text: '🔑 קוד-גישה', callback_data: 'access_code_prompt' }]]
+            }
+        }
+    );
 }
 
 // /whitelist command — add user by chat ID or @username
@@ -977,10 +992,36 @@ bot.on('callback_query', async (callbackQuery) => {
         // 3) Block users not on whitelist (when whitelist is enabled)
         if (isWhitelistBlocked(chatId)) {
             bot.answerCallbackQuery(callbackQuery.id);
-            await bot.sendMessage(chatId, '🔒 <b>גישה מוגבלת</b>\n\nהבוט פועל במצב רשימה לבנה. פנה למנהל הבוט לקבלת גישה.', { parse_mode: 'HTML' });
-            return;
+            // Allow the access-code prompt button through even when blocked
+            if (data !== 'access_code_prompt') {
+                await sendWhitelistBlockedMessage(chatId);
+                return;
+            }
         }
         
+    // === ACCESS CODE ===
+    if (data === 'access_code_prompt') {
+        bot.answerCallbackQuery(callbackQuery.id);
+        adminStates.set(chatId, { action: 'access_code' });
+        await bot.sendMessage(chatId,
+            '🔑 <b>הזן קוד גישה:</b>',
+            {
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [[{ text: '❌ ביטול', callback_data: 'access_code_cancel' }]]
+                }
+            }
+        );
+        return;
+    }
+
+    if (data === 'access_code_cancel') {
+        bot.answerCallbackQuery(callbackQuery.id);
+        adminStates.delete(chatId);
+        await sendWhitelistBlockedMessage(chatId);
+        return;
+    }
+
     // === USER CALLBACKS ===
     if (data === 'create_account') {
         bot.answerCallbackQuery(callbackQuery.id);
@@ -1837,7 +1878,38 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
 // Handle admin conversation states
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
-    
+
+    // Handle access code input (works for any user, not just admins)
+    if (adminStates.has(chatId) && adminStates.get(chatId).action === 'access_code') {
+        const text = (msg.text || '').trim();
+        adminStates.delete(chatId);
+
+        if (text.toLowerCase() === ACCESS_CODE.toLowerCase()) {
+            addToWhitelist(chatId, 'access_code');
+            const userInfo = {
+                id: msg.from.id,
+                username: msg.from.username,
+                first_name: msg.from.first_name,
+                last_name: msg.from.last_name
+            };
+            const username = msg.from.username || msg.from.first_name || 'Missing';
+            addLog(chatId, username, 'start', 'success', null, userInfo);
+            await bot.sendMessage(chatId, '✅ <b>קוד נכון! קיבלת גישה לבוט.</b>', { parse_mode: 'HTML' });
+            await sendMainMenu(chatId);
+            // Notify admins
+            const displayName = (msg.from.first_name || '') + (msg.from.last_name ? ' ' + msg.from.last_name : '');
+            await notifyAdmins(`🔑 <b>משתמש חדש הצטרף עם קוד גישה</b>\n\n👤 ${escapeHTML(displayName || username)}\n🆔 <code>${chatId}</code>\n📱 @${escapeHTML(username)}`);
+        } else {
+            await bot.sendMessage(chatId, '❌ <b>קוד שגוי.</b> נסה שוב.', {
+                parse_mode: 'HTML',
+                reply_markup: {
+                    inline_keyboard: [[{ text: '🔑 נסה שוב', callback_data: 'access_code_prompt' }]]
+                }
+            });
+        }
+        return;
+    }
+
     // Handle admin conversations
     if (isAdmin(chatId) && adminStates.has(chatId)) {
         const state = adminStates.get(chatId);
