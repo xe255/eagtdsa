@@ -18,25 +18,18 @@ async function run(statusCallback = () => { }) {
     const page = await context.newPage();
     const tempMail = new TempMailAPI();
 
-    // Fast fill: directly set value via native setter (picks up React/Vue reactivity)
-    // Much faster than pressSequentially which types char-by-char
+    // Fill a field: click to focus, fill, then blur to trigger validation
     const fastFill = async (selector, value, parent = page) => {
         const locator = parent.locator(selector);
         await locator.waitFor({ state: 'visible', timeout: 15000 });
-        await locator.evaluate((el, val) => {
-            // Use native setter so React/Angular/Vue detect the change
-            const nativeSetter = Object.getOwnPropertyDescriptor(
-                window.HTMLInputElement.prototype, 'value'
-            )?.set;
-            if (nativeSetter) {
-                nativeSetter.call(el, val);
-            } else {
-                el.value = val;
-            }
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
+        await locator.click();
+        await locator.fill(value);
+        // Small pause so React processes the input event before we move on
+        await page.waitForTimeout(150);
+        await locator.evaluate(el => {
             el.dispatchEvent(new Event('blur', { bubbles: true }));
-        }, value);
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        });
     };
 
     // Wait for a button to become enabled, with a timeout
@@ -88,14 +81,12 @@ async function run(statusCallback = () => { }) {
 
         statusCallback('[20%] 📝 ממלא טופס הרשמה...');
 
-        // Fill all fields simultaneously using Promise.all for max speed
-        await Promise.all([
-            fastFill('input[name="firstName"]', 'John'),
-            fastFill('input[name="lastName"]', 'Doe'),
-            fastFill('input[name="email"]', email),
-            fastFill('input[name="password"]', password),
-            fastFill('input[name="confirmPassword"]', password),
-        ]);
+        // Fill sequentially — parallel filling confuses React's focus/state tracking
+        await fastFill('input[name="firstName"]', 'John');
+        await fastFill('input[name="lastName"]', 'Doe');
+        await fastFill('input[name="email"]', email);
+        await fastFill('input[name="password"]', password);
+        await fastFill('input[name="confirmPassword"]', password);
 
         // Check terms/checkboxes
         await checkAllBoxes(page);
@@ -118,17 +109,20 @@ async function run(statusCallback = () => { }) {
 
         await submitBtn.click({ force: true });
 
-        // Wait for page to navigate away from sign-up (more reliable than waitForNavigation)
+        // Wait for the signup form to disappear OR a success/verify message to appear.
+        // Don't rely on URL since success page may still contain 'sign-up' in its path.
         try {
-            await page.waitForFunction(
-                () => !window.location.href.includes('sign-up'),
-                { timeout: 30000 }
-            );
+            await page.waitForFunction(() => {
+                const hasSignupForm = !!document.querySelector('input[name="firstName"]');
+                const text = (document.body && document.body.innerText) || '';
+                const hasSuccess = text.includes('נוצר') || text.includes('אישור') ||
+                    text.includes('verify') || text.includes('success') ||
+                    text.includes('confirmation') || text.includes('sent');
+                return !hasSignupForm || hasSuccess;
+            }, { timeout: 30000 });
         } catch (e) {
-            // If we timed out, check if we're still on sign-up — if not, continue
-            if (page.url().includes('sign-up')) {
-                throw new Error('טופס ההרשמה לא הוגש — ייתכן שהמייל כבר קיים');
-            }
+            await page.screenshot({ path: 'debug_signup.png', fullPage: true }).catch(() => {});
+            throw new Error('טופס ההרשמה לא הוגש — ייתכן שהמייל כבר קיים');
         }
 
         statusCallback('[42%] ✅ טופס ההרשמה הוגש.');
@@ -188,16 +182,15 @@ async function run(statusCallback = () => { }) {
         statusCallback('[86%] 🚀 שולח טופס התחברות...');
         await page.click('button[type="submit"]', { force: true });
 
-        // Wait until we leave the login page
+        // Wait to navigate away from the /login page
         try {
             await page.waitForFunction(
                 () => !window.location.href.includes('/login'),
                 { timeout: 30000 }
             );
         } catch (e) {
-            if (page.url().includes('/login')) {
-                throw new Error('ההתחברות נכשלה — ייתכן שהחשבון לא אומת');
-            }
+            await page.screenshot({ path: 'debug_login.png', fullPage: true }).catch(() => {});
+            throw new Error('ההתחברות נכשלה — ייתכן שהחשבון לא אומת');
         }
 
         statusCallback('[90%] 💎 פותח דף מנוי...');
