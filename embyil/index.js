@@ -3,258 +3,293 @@ const TempMailAPI = require('./tinyhost');
 const { generateNumericString, generateUsername5, generateStrongPassword } = require('../utils');
 
 async function run(statusCallback = () => { }) {
-    const originalLog = console.log;
-    console.log = (...args) => {
-        originalLog(...args);
-        // We could write to a file here, but app.js will handle redirection
-    };
-    const browser = await chromium.launch({ headless: true }); // Headless for bot usage
-    const context = await browser.newContext();
-    const page = await context.newPage();
+    const browser = await chromium.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    });
+    const context = await browser.newContext({
+        // Disable images/fonts to speed up page loads
+        extraHTTPHeaders: { 'Accept-Language': 'he-IL,he;q=0.9,en;q=0.8' }
+    });
 
+    // Block images, fonts, and media to reduce load time
+    await context.route('**/*.{png,jpg,jpeg,gif,svg,ico,woff,woff2,ttf,otf,mp4,webm}', route => route.abort());
+
+    const page = await context.newPage();
     const tempMail = new TempMailAPI();
 
-    const strongFill = async (selector, value, parent = page) => {
+    // Fast fill: directly set value via native setter (picks up React/Vue reactivity)
+    // Much faster than pressSequentially which types char-by-char
+    const fastFill = async (selector, value, parent = page) => {
         const locator = parent.locator(selector);
-        await locator.click();
-        await locator.clear();
-        // Reduced delay for faster typing
-        await locator.pressSequentially(value, { delay: 10 });
-        // Explicitly trigger events as a fallback
-        await locator.evaluate((el) => {
+        await locator.waitFor({ state: 'visible', timeout: 15000 });
+        await locator.evaluate((el, val) => {
+            // Use native setter so React/Angular/Vue detect the change
+            const nativeSetter = Object.getOwnPropertyDescriptor(
+                window.HTMLInputElement.prototype, 'value'
+            )?.set;
+            if (nativeSetter) {
+                nativeSetter.call(el, val);
+            } else {
+                el.value = val;
+            }
             el.dispatchEvent(new Event('input', { bubbles: true }));
             el.dispatchEvent(new Event('change', { bubbles: true }));
             el.dispatchEvent(new Event('blur', { bubbles: true }));
-        });
+        }, value);
+    };
+
+    // Wait for a button to become enabled, with a timeout
+    const waitForEnabled = async (locator, maxMs = 15000) => {
+        const start = Date.now();
+        while (Date.now() - start < maxMs) {
+            if (await locator.isEnabled().catch(() => false)) return true;
+            await page.waitForTimeout(300);
+        }
+        return false;
+    };
+
+    // Check and click all unchecked checkboxes within a parent
+    const checkAllBoxes = async (parent = page) => {
+        const boxes = await parent.locator('input[type="checkbox"], [role="checkbox"]').all();
+        for (const box of boxes) {
+            try {
+                if (!(await box.isChecked())) await box.click({ force: true });
+            } catch (e) { /* ignore unclickable */ }
+        }
+        // Also click any visible agree/terms labels
+        const labels = parent.locator(
+            'label:has-text("מסכים"), label:has-text("תנאי"), label:has-text("Agree"), label:has-text("Terms")'
+        );
+        const count = await labels.count();
+        for (let i = 0; i < count; i++) {
+            try { await labels.nth(i).click({ force: true }); } catch (e) { }
+        }
     };
 
     try {
         statusCallback('[5%] ⚙️ מכין את פרטי החשבון החדש...');
-        // Start fetching domain in parallel with page navigation
+
+        // Fetch domain and navigate to sign-up in parallel
         const domainPromise = tempMail.getRandomDomains(1);
-
         const username = generateUsername5();
-        const firstName = 'John';
-        const lastName = 'Doe';
         const password = generateStrongPassword();
-
-        statusCallback('[10%] 📝 מתחיל בתהליך ההרשמה לאתר...');
-        // Use 'commit' for faster initial load if possible, or stick to networkidle for reliability
-        const gotoPromise = page.goto('https://client.embyiltv.io/sign-up', { waitUntil: 'domcontentloaded' });
+        const gotoPromise = page.goto('https://client.embyiltv.io/sign-up', { waitUntil: 'domcontentloaded', timeout: 30000 });
 
         const domainData = await domainPromise;
         const domain = domainData.domains[0];
         const email = `${username}@${domain}`;
 
-        statusCallback(`[15%] 📧 אימייל זמני נוצר:\n<code>${email}</code>`);
+        statusCallback(`[12%] 📧 אימייל זמני: <code>${email}</code>`);
         await gotoPromise;
 
+        // Wait for the form to be ready
         await page.waitForSelector('input[name="firstName"]', { timeout: 30000 });
-        await strongFill('input[name="firstName"]', firstName);
-        await strongFill('input[name="lastName"]', lastName);
-        await strongFill('input[name="email"]', email);
-        await strongFill('input[name="password"]', password);
-        await strongFill('input[name="confirmPassword"]', password);
 
-        // Check for any mandatory checkboxes (e.g., Terms of Service)
-        const checkboxes = await page.locator('input[type="checkbox"], [role="checkbox"]').all();
-        for (const checkbox of checkboxes) {
-            try {
-                if (!(await checkbox.isChecked())) {
-                    await checkbox.click({ force: true });
-                }
-            } catch (e) {
-                // Ignore if not clickable
-            }
-        }
+        statusCallback('[20%] 📝 ממלא טופס הרשמה...');
 
-        // Try to click any labels containing "מסכים" or "תנאי" (common Hebrew for "Agree" or "Terms")
-        const labelsToWait = page.locator('label:has-text("מסכים"), label:has-text("תנאי"), label:has-text("Agree"), label:has-text("Terms")');
-        const labelCount = await labelsToWait.count();
-        for (let i = 0; i < labelCount; i++) {
-            try {
-                await labelsToWait.nth(i).click({ force: true });
-            } catch (e) { }
-        }
+        // Fill all fields simultaneously using Promise.all for max speed
+        await Promise.all([
+            fastFill('input[name="firstName"]', 'John'),
+            fastFill('input[name="lastName"]', 'Doe'),
+            fastFill('input[name="email"]', email),
+            fastFill('input[name="password"]', password),
+            fastFill('input[name="confirmPassword"]', password),
+        ]);
 
-        await page.waitForTimeout(2000); // Wait for form validation to update
+        // Check terms/checkboxes
+        await checkAllBoxes(page);
 
-        statusCallback('[30%] שולח טופס הרשמה...');
+        statusCallback('[30%] 🖱️ שולח טופס הרשמה...');
+
+        // Wait for submit button to be enabled (form validation passed)
         const submitBtn = page.locator('button[type="submit"]');
+        await submitBtn.waitFor({ state: 'attached', timeout: 10000 });
+        const enabled = await waitForEnabled(submitBtn, 10000);
 
-        // Wait up to 10 seconds for the button to become enabled
-        try {
-            await submitBtn.waitFor({ state: 'attached', timeout: 5000 });
-            for (let i = 0; i < 10; i++) {
-                if (await submitBtn.isEnabled()) break;
-                await page.waitForTimeout(500); // Shorter check interval
-            }
-        } catch (e) { }
-
-        await submitBtn.click();
-
-        try {
-            await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 30000 });
-        } catch (e) {
-            statusCallback('[35%] ממתין לטעינת דף לאחר הרשמה...');
+        if (!enabled) {
+            // Try re-filling if validation didn't pass (sometimes fields need a nudge)
+            await fastFill('input[name="email"]', email);
+            await fastFill('input[name="password"]', password);
+            await fastFill('input[name="confirmPassword"]', password);
+            await checkAllBoxes(page);
+            await waitForEnabled(submitBtn, 5000);
         }
 
-        statusCallback('[40%] 📤 טופס ההרשמה נשלח בהצלחה.');
+        await submitBtn.click({ force: true });
 
-        statusCallback('[50%] ⏳ ממתין לאימייל אימות (זה עשוי לקחת רגע)...');
+        // Wait for page to navigate away from sign-up (more reliable than waitForNavigation)
+        try {
+            await page.waitForFunction(
+                () => !window.location.href.includes('sign-up'),
+                { timeout: 30000 }
+            );
+        } catch (e) {
+            // If we timed out, check if we're still on sign-up — if not, continue
+            if (page.url().includes('sign-up')) {
+                throw new Error('טופס ההרשמה לא הוגש — ייתכן שהמייל כבר קיים');
+            }
+        }
 
-        const emailDetail = await tempMail.pollForEmail(domain, username, {
-            senderKeyword: 'noreply@embyiltv.io'
-        }, 300000);
+        statusCallback('[42%] ✅ טופס ההרשמה הוגש.');
+        statusCallback('[50%] ⏳ ממתין לאימייל אימות...');
+
+        // Poll for verification email — 2s interval for faster detection
+        const emailDetail = await tempMail.pollForEmail(
+            domain, username,
+            { senderKeyword: 'noreply@embyiltv.io' },
+            300000,
+            2000 // 2s interval instead of 3s
+        );
 
         statusCallback('[65%] ✅ אימייל האימות התקבל!');
 
+        // Extract verification link
         const linkRegex = /https?:\/\/[^\s"'<>]+/g;
-        const links = emailDetail.html_body.match(linkRegex) || [];
-        // Support common Hebrew and English verification terms
+        const links = (emailDetail.html_body || '').match(linkRegex) || [];
         const verifyLink = links.find(l =>
             l.includes('verify') ||
             l.includes('confirm') ||
             l.includes('sign-up') ||
             l.includes('email-confirmation') ||
             l.includes('activation') ||
-            l.includes('אימות') ||
-            l.includes('confirm-email')
+            l.includes('confirm-email') ||
+            l.includes('token')
         );
 
         if (!verifyLink) {
-            console.log('Available links in email:', links);
+            console.error('Links in email:', links);
             throw new Error('קישור אימות לא נמצא באימייל');
         }
 
         statusCallback('[75%] 🔗 מבצע אימות חשבון...');
+
+        // Open verification link and wait for it to actually process
         const verifyPage = await context.newPage();
-        const cleanLink = verifyLink.replace(/&amp;/g, '&');
-        await verifyPage.goto(cleanLink, { waitUntil: 'commit' });
-        await verifyPage.waitForTimeout(2000); // Reduced wait
+        await verifyPage.goto(verifyLink.replace(/&amp;/g, '&'), {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
+        });
+        // Wait for the page to show some content (success/redirect)
+        await verifyPage.waitForTimeout(1500);
         await verifyPage.close();
 
-        statusCallback('[85%] 🔓 מבצע התחברות ראשונית...');
-        await page.goto('https://client.embyiltv.io/login');
-        await strongFill('input[name="login"]', email);
-        await strongFill('input[name="password"]', password);
+        statusCallback('[82%] 🔓 מתחבר לחשבון...');
 
-        statusCallback('[87%] שולח טופס התחברות...');
-        await page.click('button[type="submit"]');
+        // Log in
+        await page.goto('https://client.embyiltv.io/login', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForSelector('input[name="login"]', { timeout: 15000 });
 
+        await Promise.all([
+            fastFill('input[name="login"]', email),
+            fastFill('input[name="password"]', password),
+        ]);
+
+        statusCallback('[86%] 🚀 שולח טופס התחברות...');
+        await page.click('button[type="submit"]', { force: true });
+
+        // Wait until we leave the login page
         try {
-            await page.waitForNavigation({ waitUntil: 'networkidle', timeout: 30000 });
+            await page.waitForFunction(
+                () => !window.location.href.includes('/login'),
+                { timeout: 30000 }
+            );
         } catch (e) {
-            statusCallback('[88%] ממתין לטעינת דף התחברות...');
+            if (page.url().includes('/login')) {
+                throw new Error('ההתחברות נכשלה — ייתכן שהחשבון לא אומת');
+            }
         }
 
-        statusCallback('[90%] 💎 יוצר מנוי ניסיון בנגן...');
-        if (!page.url().includes('subscriptions')) {
-            await page.goto('https://client.embyiltv.io/subscriptions?page=0&sorts=%5B%5D', { waitUntil: 'domcontentloaded' });
-        }
-        await page.waitForTimeout(2000); // Reduced wait
+        statusCallback('[90%] 💎 פותח דף מנוי...');
 
+        // Navigate to subscriptions
+        await page.goto(
+            'https://client.embyiltv.io/subscriptions?page=0&sorts=%5B%5D',
+            { waitUntil: 'domcontentloaded', timeout: 30000 }
+        );
+
+        // Wait for either the trial dialog or the page content — up to 8s
         const dialogSelector = '[role="alertdialog"]';
-        const hasDialog = await page.isVisible(dialogSelector);
+        let hasDialog = false;
+        try {
+            await page.waitForSelector(dialogSelector, { timeout: 8000 });
+            hasDialog = true;
+        } catch (e) {
+            hasDialog = await page.isVisible(dialogSelector);
+        }
 
-        let embyLogin, embyPassword;
+        const embyLogin = generateNumericString(6);
+        const embyPassword = '1111';
 
         if (hasDialog) {
-            statusCallback('[91%] זוהה דיאלוג תקופת ניסיון. ממלא פרטים...');
+            statusCallback('[92%] 📋 ממלא פרטי נגן Emby...');
             const dialog = page.locator(dialogSelector);
 
-            embyLogin = generateNumericString(6);
-            embyPassword = '1111';
+            await Promise.all([
+                fastFill('input[name="login"]', embyLogin, dialog),
+                fastFill('input[name="password"]', embyPassword, dialog),
+                fastFill('input[name="confirmPassword"]', embyPassword, dialog),
+            ]);
 
-            await strongFill('input[name="login"]', embyLogin, dialog);
-            await strongFill('input[name="password"]', embyPassword, dialog);
-            await strongFill('input[name="confirmPassword"]', embyPassword, dialog);
+            await checkAllBoxes(dialog);
 
-            // Check for any mandatory checkboxes within the dialog
-            const dialogCheckboxes = await dialog.locator('input[type="checkbox"], [role="checkbox"]').all();
-            for (const checkbox of dialogCheckboxes) {
-                try {
-                    if (!(await checkbox.isChecked())) {
-                        await checkbox.click({ force: true });
-                    }
-                } catch (e) { }
-            }
+            const confirmBtn = dialog.locator(
+                'button:has-text("אשר"), button:has-text("Confirm"), button:has-text("OK"), button[type="submit"]'
+            ).first();
+            await confirmBtn.waitFor({ state: 'visible', timeout: 10000 });
+            await waitForEnabled(confirmBtn, 15000);
 
-            // Try to click any labels containing "מסכים" or "תנאי" inside the dialog
-            const dialogLabels = dialog.locator('label:has-text("מסכים"), label:has-text("תנאי"), label:has-text("Agree"), label:has-text("Terms")');
-            const dLabelCount = await dialogLabels.count();
-            for (let i = 0; i < dLabelCount; i++) {
-                try {
-                    await dialogLabels.nth(i).click({ force: true });
-                } catch (e) { }
-            }
-
-            statusCallback('[92%] שולח טופס תקופת ניסיון...');
-            const confirmBtn = dialog.locator('button:has-text("אשר"), button:has-text("Confirm"), button:has-text("OK")');
-            await confirmBtn.waitFor({ state: 'visible' });
-
-            // Wait up to 20 seconds for the button to become enabled
-            try {
-                for (let i = 0; i < 20; i++) {
-                    if (await confirmBtn.isEnabled()) break;
-                    await page.waitForTimeout(1000);
-                }
-            } catch (e) { }
-
+            statusCallback('[94%] ✅ שולח טופס ניסיון...');
             await confirmBtn.click({ force: true });
-            statusCallback('[94%] מנוי ניסיון נוצר בהצלחה.');
-        } else {
-            statusCallback('[91%] דיאלוג ניסיון לא נמצא. מנסה יצירה ידנית...');
-            const createLineBtn = page.locator('button:has-text("צור"), button:has-text("חדש"), button:has-text("New"), button:has-text("Create")').first();
-            if (await createLineBtn.isVisible()) {
-                await createLineBtn.click();
-                await page.waitForTimeout(2000);
-            }
 
-            embyLogin = generateNumericString(6);
-            embyPassword = '1111';
-
-            await page.waitForSelector('input[name="login"]', { timeout: 30000 });
-            await strongFill('input[name="login"]', embyLogin);
-
-            const p1 = page.locator('input[name="password"]').nth(0);
-            const cp = page.locator('input[name="confirmPassword"]');
-
-            if (await p1.isVisible()) await strongFill('input[name="password"]', embyPassword);
-            if (await cp.isVisible()) await strongFill('input[name="confirmPassword"]', embyPassword);
-
-            // Check for checkboxes in manual creation
-            const manualCheckboxes = await page.locator('input[type="checkbox"], [role="checkbox"]').all();
-            for (const checkbox of manualCheckboxes) {
-                try {
-                    if (!(await checkbox.isChecked())) {
-                        await checkbox.click({ force: true });
-                    }
-                } catch (e) { }
-            }
-
-            statusCallback('[92%] שולח טופס יצירת מנוי...');
-            const submitBtn = page.locator('button:has-text("צור"), button:has-text("שמור"), button[type="submit"]').first();
-
-            // Wait for enabled
+            // Wait for dialog to close (success)
             try {
-                await submitBtn.waitFor({ state: 'visible', timeout: 5000 });
-                for (let i = 0; i < 10; i++) {
-                    if (await submitBtn.isEnabled()) break;
-                    await page.waitForTimeout(1000);
-                }
-            } catch (e) { }
+                await page.waitForSelector(dialogSelector, { state: 'hidden', timeout: 10000 });
+            } catch (e) { /* dialog may have already closed */ }
 
-            if (await submitBtn.isVisible() && await submitBtn.isEnabled()) {
-                await submitBtn.click({ force: true });
+        } else {
+            // Try clicking a "Create" button if dialog didn't auto-open
+            statusCallback('[92%] 🔍 מחפש כפתור יצירת מנוי...');
+            const createBtn = page.locator(
+                'button:has-text("צור"), button:has-text("חדש"), button:has-text("New"), button:has-text("Create")'
+            ).first();
+
+            if (await createBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+                await createBtn.click();
+
+                // Now wait for the dialog to appear
+                try {
+                    await page.waitForSelector(dialogSelector, { timeout: 8000 });
+                    const dialog = page.locator(dialogSelector);
+
+                    await Promise.all([
+                        fastFill('input[name="login"]', embyLogin, dialog),
+                        fastFill('input[name="password"]', embyPassword, dialog),
+                        fastFill('input[name="confirmPassword"]', embyPassword, dialog),
+                    ]);
+
+                    await checkAllBoxes(dialog);
+
+                    const confirmBtn = dialog.locator(
+                        'button:has-text("אשר"), button:has-text("Confirm"), button:has-text("OK"), button[type="submit"]'
+                    ).first();
+                    await confirmBtn.waitFor({ state: 'visible', timeout: 10000 });
+                    await waitForEnabled(confirmBtn, 15000);
+                    await confirmBtn.click({ force: true });
+                    try {
+                        await page.waitForSelector(dialogSelector, { state: 'hidden', timeout: 10000 });
+                    } catch (e) { }
+                } catch (e) {
+                    throw new Error('דיאלוג יצירת מנוי לא הופיע');
+                }
             } else {
-                await page.keyboard.press('Enter');
+                throw new Error('לא נמצא דיאלוג או כפתור יצירת מנוי');
             }
         }
 
-        statusCallback('[95%] ✨ כמעט סיימנו... מגדיר את כל הפרטים.');
-        // Reduced from 20s to 5s - usually enough for the backend to sync
-        await page.waitForTimeout(5000);
+        // Short wait for backend to register the subscription
+        statusCallback('[97%] ✨ ממתין לאישור הרישום...');
+        await page.waitForTimeout(3000);
 
         statusCallback('[100%] 🎊 הכל מוכן!');
         return {

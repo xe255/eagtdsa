@@ -24,7 +24,7 @@ class TempMailAPI {
     return res.json();
   }
 
-  async pollForEmail(domain, user, filters = {}, timeoutMs = 120000, intervalMs = 3000) {
+  async pollForEmail(domain, user, filters = {}, timeoutMs = 120000, intervalMs = 2000) {
     const startTime = Date.now();
     const { subjectKeyword, senderKeyword } = filters;
 
