@@ -64,20 +64,6 @@ const bot = new TelegramBot(token, {
     }
 });
 
-// Validate group access at startup when REQUIRED_GROUP_ID is set
-if (REQUIRED_GROUP_ID) {
-    (async () => {
-        try {
-            await bot.getChat(REQUIRED_GROUP_ID);
-            console.log('✅ Group gate ON: bot can access required group', REQUIRED_GROUP_ID);
-        } catch (e) {
-            console.error('❌ Group gate FAILED: bot cannot access group', REQUIRED_GROUP_ID);
-            console.error('   Error:', e.message);
-            console.error('   → Add the bot to your group and ensure REQUIRED_GROUP_ID is correct.');
-        }
-    })();
-}
-
 // Handle polling errors gracefully
 bot.on('polling_error', (error) => {
     // Ignore old callback query errors - these happen when bot restarts
@@ -193,6 +179,20 @@ if (ADMIN_CHAT_IDS_ARRAY.length === 0) console.warn('ADMIN_CHAT_ID or ADMIN_CHAT
 if (!REQUIRED_GROUP_ID) {
     console.warn('⚠️ REQUIRED_GROUP_ID not set - group gate is OFF (anyone can use the bot)!');
     console.warn('   To enable: add bot to your group, run /getgroupid there, then set REQUIRED_GROUP_ID in Zeabur env vars.');
+}
+
+// Validate group access at startup when REQUIRED_GROUP_ID is set
+if (REQUIRED_GROUP_ID) {
+    (async () => {
+        try {
+            await bot.getChat(REQUIRED_GROUP_ID);
+            console.log('✅ Group gate ON: bot can access required group', REQUIRED_GROUP_ID);
+        } catch (e) {
+            console.error('❌ Group gate FAILED: bot cannot access group', REQUIRED_GROUP_ID);
+            console.error('   Error:', e.message);
+            console.error('   → Add the bot to your group and ensure REQUIRED_GROUP_ID is correct.');
+        }
+    })();
 }
 
 // Notify all admins (e.g. new user / new account alerts). Silently skip if no admins or send fails.
