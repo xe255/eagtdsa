@@ -17,7 +17,8 @@ if (!fs.existsSync(DB_PATH)) {
         unlimitedUsers: [],
         creationEnabled: true,
         whitelist: [],
-        whitelistEnabled: false
+        whitelistEnabled: false,
+        broadcasts: []
     }, null, 2));
 } else {
     // Migrate existing DB: ensure new fields exist
@@ -27,7 +28,8 @@ if (!fs.existsSync(DB_PATH)) {
     if (!_existing.unlimitedUsers) { _existing.unlimitedUsers = []; _changed = true; }
     if (_existing.creationEnabled === undefined) { _existing.creationEnabled = true; _changed = true; }
     if (!_existing.whitelist) { _existing.whitelist = []; _changed = true; }
-    if (_existing.whitelistEnabled === undefined) { _existing.whitelistEnabled = false; _changed = true; }
+    if ((_existing.whitelistEnabled === undefined)) { _existing.whitelistEnabled = false; _changed = true; }
+    if (!_existing.broadcasts) { _existing.broadcasts = []; _changed = true; }
     if (_changed) fs.writeFileSync(DB_PATH, JSON.stringify(_existing, null, 2));
 }
 
@@ -554,6 +556,64 @@ function removeDbAdmin(chatId) {
     return false;
 }
 
+// Broadcast Analytics
+function addBroadcast(broadcastData) {
+    const data = getLogs();
+    if (!data.broadcasts) data.broadcasts = [];
+    
+    const newBroadcast = {
+        id: Date.now().toString(),
+        timestamp: new Date().toISOString(),
+        messagePreview: broadcastData.messagePreview,
+        targetUrl: broadcastData.targetUrl || null,
+        buttonLabel: broadcastData.buttonLabel || null,
+        sentCount: 0,
+        failedCount: 0,
+        clickCount: 0,
+        clicks: []
+    };
+    
+    data.broadcasts.unshift(newBroadcast);
+    fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+    return newBroadcast;
+}
+
+function updateBroadcastStats(id, stats) {
+    const data = getLogs();
+    if (!data.broadcasts) return;
+    
+    const broadcast = data.broadcasts.find(b => b.id === id);
+    if (broadcast) {
+        if (stats.sentCount !== undefined) broadcast.sentCount = stats.sentCount;
+        if (stats.failedCount !== undefined) broadcast.failedCount = stats.failedCount;
+        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+    }
+}
+
+function logBroadcastClick(id, userInfo = null) {
+    const data = getLogs();
+    if (!data.broadcasts) return;
+    
+    const broadcast = data.broadcasts.find(b => b.id === id);
+    if (broadcast) {
+        broadcast.clickCount++;
+        if (userInfo) {
+            broadcast.clicks.push({
+                timestamp: new Date().toISOString(),
+                ...userInfo
+            });
+        }
+        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        return broadcast.targetUrl;
+    }
+    return null;
+}
+
+function getBroadcasts() {
+    const data = getLogs();
+    return data.broadcasts || [];
+}
+
 module.exports = { 
     getLogs, 
     addLog, 
@@ -594,5 +654,10 @@ module.exports = {
     getWhitelist,
     isWhitelisted,
     addToWhitelist,
-    removeFromWhitelist
+    removeFromWhitelist,
+    // Broadcast Analytics
+    addBroadcast,
+    updateBroadcastStats,
+    logBroadcastClick,
+    getBroadcasts
 };

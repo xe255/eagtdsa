@@ -40,12 +40,18 @@ const {
     getWhitelist,
     isWhitelisted,
     addToWhitelist,
-    removeFromWhitelist
+    removeFromWhitelist,
+    // Broadcast Analytics
+    addBroadcast,
+    updateBroadcastStats,
+    logBroadcastClick,
+    getBroadcasts
 } = require('./database');
 
 // --- Configuration ---
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const port = process.env.PORT || 3000;
+const PUBLIC_URL = process.env.PUBLIC_URL || '';
 
 // Validate required environment variables
 if (!token) {
@@ -1733,7 +1739,19 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
         else if (data.startsWith('admin_confirm_broadcast_')) {
             const broadcastMsgId = data.replace('admin_confirm_broadcast_', '');
             const users = getAllUsers().filter(u => !u.isBlacklisted);
+            const state = adminStates.get(chatId);
             
+            // Log broadcast to database
+            let broadcastId = null;
+            if (state) {
+                const broadcast = addBroadcast({
+                    messagePreview: 'הודעת שידור', // Could be more descriptive if we saved the text
+                    targetUrl: state.buttonUrl,
+                    buttonLabel: state.buttonLabel
+                });
+                broadcastId = broadcast.id;
+            }
+
             adminStates.delete(chatId);
             
             const statusMsg = await bot.sendMessage(chatId, `📢 מתחיל שידור ל-${users.length} משתמשים...`);
@@ -1743,9 +1761,18 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
             
             for (const user of users) {
                 try {
-                    const replyMarkup = (state && state.buttonLabel && state.buttonUrl) ? {
-                        inline_keyboard: [[{ text: state.buttonLabel, url: state.buttonUrl }]]
-                    } : undefined;
+                    let replyMarkup = undefined;
+                    if (state && state.buttonLabel && state.buttonUrl) {
+                        let finalUrl = state.buttonUrl;
+                        // Use tracking URL if PUBLIC_URL is set
+                        if (PUBLIC_URL && broadcastId) {
+                            finalUrl = `${PUBLIC_URL.replace(/\/$/, '')}/r/${broadcastId}`;
+                        }
+                        
+                        replyMarkup = {
+                            inline_keyboard: [[{ text: state.buttonLabel, url: finalUrl }]]
+                        };
+                    }
 
                     await bot.copyMessage(user.chatId, chatId, broadcastMsgId, {
                         reply_markup: replyMarkup
@@ -1758,6 +1785,11 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
                 }
             }
             
+            // Update stats in database
+            if (broadcastId) {
+                updateBroadcastStats(broadcastId, { sentCount: sent, failedCount: failed });
+            }
+
             await bot.editMessageText(
                 `✅ שידור הושלם!\n\n📤 נשלח: ${sent}\n❌ נכשל: ${failed}\n📊 סה"כ: ${users.length}`,
                 {
@@ -2220,6 +2252,21 @@ server.on('upgrade', (request, socket, head) => {
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Analytics Redirect Route
+app.get('/r/:id', (req, res) => {
+    const id = req.params.id;
+    const targetUrl = logBroadcastClick(id, {
+        ip: req.headers['x-forwarded-for'] || req.socket.remoteAddress,
+        userAgent: req.headers['user-agent']
+    });
+    
+    if (targetUrl) {
+        res.redirect(targetUrl);
+    } else {
+        res.status(404).send('Link not found');
+    }
+});
+
 // API Endpoints
 app.get('/api/logs', (req, res) => {
     res.json(getLogs());
@@ -2298,6 +2345,10 @@ app.post('/api/send-message', async (req, res) => {
         console.error('Error sending admin message:', error);
         res.status(500).json({ error: error.message });
     }
+});
+
+app.get('/api/broadcasts', (req, res) => {
+    res.json(getBroadcasts());
 });
 
 server.listen(port, () => {
