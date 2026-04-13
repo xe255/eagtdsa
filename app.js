@@ -45,7 +45,11 @@ const {
     addBroadcast,
     updateBroadcastStats,
     logBroadcastClick,
-    getBroadcasts
+    getBroadcasts,
+    // Broadcast Exclusion
+    isBroadcastExcluded,
+    addToBroadcastExclusion,
+    removeFromBroadcastExclusion
 } = require('./database');
 
 // --- Configuration ---
@@ -420,11 +424,14 @@ bot.onText(/\/admin/, async (msg) => {
                 { text: '💼 חשבונות', callback_data: 'admin_accounts' }
             ],
             [
-                { text: '🚫 חסומים', callback_data: 'admin_blacklist' },
-                { text: creationOn ? '🟢 יצירה: פעיל' : '🔴 יצירה: כבוי', callback_data: 'admin_toggle_creation' }
+                { text: '🔍 חיפוש משתמש', callback_data: 'admin_search_user' },
+                { text: '🚫 חסומים', callback_data: 'admin_blacklist' }
             ],
             [
-                { text: '📋 רשימה לבנה', callback_data: 'admin_whitelist' },
+                { text: creationOn ? '🟢 יצירה: פעיל' : '🔴 יצירה: כבוי', callback_data: 'admin_toggle_creation' },
+                { text: '📋 רשימה לבנה', callback_data: 'admin_whitelist' }
+            ],
+            [
                 { text: wlOn ? '🟢 רשימה לבנה: פעיל' : '⚪ רשימה לבנה: כבוי', callback_data: 'admin_toggle_whitelist' }
             ]
         ]
@@ -1471,7 +1478,13 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
         } else {
             keyboard.push([{ text: '📋 הוסף לרשימה לבנה', callback_data: `admin_wl_add_${targetUserId}` }]);
         }
-        
+
+        if (isBroadcastExcluded(targetUserId)) {
+            keyboard.push([{ text: '📢 הכלל בשידורים', callback_data: `admin_bex_remove_${targetUserId}` }]);
+        } else {
+            keyboard.push([{ text: '🔇 החרג משידורים', callback_data: `admin_bex_add_${targetUserId}` }]);
+        }
+
         keyboard.push(
             [{ text: '💬 שלח הודעה', callback_data: `admin_message_${targetUserId}` }],
             [{ text: '🔙 חזרה לרשימה', callback_data: 'admin_users' }]
@@ -1621,9 +1634,35 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
             });
         }
         
+        else if (data === 'admin_search_user') {
+            await bot.answerCallbackQuery(callbackQuery.id);
+            adminStates.set(chatId, { action: 'admin_search_awaiting_query' });
+            await bot.sendMessage(chatId, '🔍 <b>חיפוש משתמש</b>\n\nהזן שם משתמש, ID או שם פרטי לחיפוש:', { parse_mode: 'HTML' });
+        }
+
+        else if (data.startsWith('admin_bex_add_')) {
+            await bot.answerCallbackQuery(callbackQuery.id, { text: 'מחריג משידורים...' });
+            const targetId = data.replace('admin_bex_add_', '');
+            addToBroadcastExclusion(targetId);
+            await bot.sendMessage(chatId, `🔇 משתמש <code>${targetId}</code> הוחרג משידורים.`, {
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: [[{ text: '🔙 חזרה לפרטי משתמש', callback_data: `admin_user_${targetId}` }]] }
+            });
+        }
+
+        else if (data.startsWith('admin_bex_remove_')) {
+            await bot.answerCallbackQuery(callbackQuery.id, { text: 'מבטל החרגה משידורים...' });
+            const targetId = data.replace('admin_bex_remove_', '');
+            removeFromBroadcastExclusion(targetId);
+            await bot.sendMessage(chatId, `📢 משתמש <code>${targetId}</code> נכלל שוב בשידורים.`, {
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: [[{ text: '🔙 חזרה לפרטי משתמש', callback_data: `admin_user_${targetId}` }]] }
+            });
+        }
+        
         else if (data === 'admin_broadcast') {
             await bot.answerCallbackQuery(callbackQuery.id);
-            const users = getAllUsers().filter(u => !u.isBlacklisted);
+            const users = getAllUsers().filter(u => !u.isBlacklisted && !u.isBroadcastExcluded);
             
             const broadcastMessage = `
 📢 <b>שידור הודעה</b>
@@ -1632,7 +1671,7 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
 
 ━━━━━━━━━━━━━━━━━━━━
 👥 <b>יקבלו:</b> ${users.length} משתמשים
-🚫 <b>חסומים:</b> ${getAllUsers().length - users.length}
+🚫 <b>חסומים/מוחרגים:</b> ${getAllUsers().length - users.length}
 
 ⚠️ <b>שים לב:</b>
 • ההודעה תישלח לכל המשתמשים הפעילים
@@ -1738,7 +1777,7 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
         
         else if (data.startsWith('admin_confirm_broadcast_')) {
             const broadcastMsgId = data.replace('admin_confirm_broadcast_', '');
-            const users = getAllUsers().filter(u => !u.isBlacklisted);
+            const users = getAllUsers().filter(u => !u.isBlacklisted && !u.isBroadcastExcluded);
             const state = adminStates.get(chatId);
             
             // Log broadcast to database
@@ -2028,8 +2067,55 @@ bot.on('message', async (msg) => {
             });
             return;
         }
+
+        else if (state.action === 'admin_search_awaiting_query') {
+            const query = (text || '').toLowerCase();
+            adminStates.delete(chatId);
+            
+            const users = getAllUsers();
+            const results = users.filter(u => 
+                String(u.chatId).includes(query) || 
+                (u.username && u.username.toLowerCase().includes(query)) ||
+                (u.firstName && u.firstName.toLowerCase().includes(query)) ||
+                (u.lastName && u.lastName.toLowerCase().includes(query)) ||
+                (u.telegramUsername && u.telegramUsername.toLowerCase().includes(query))
+            );
+
+            if (results.length === 0) {
+                await bot.sendMessage(chatId, '❌ <b>לא נמצאו משתמשים מתאימים.</b>', { 
+                    parse_mode: 'HTML',
+                    reply_markup: { inline_keyboard: [[{ text: '🔍 נסה שוב', callback_data: 'admin_search_user' }, { text: '🔙 תפריט', callback_data: 'admin_menu' }]] }
+                });
+                return;
+            }
+
+            let message = `🔍 <b>תוצאות חיפוש עבור "${text}":</b>\n\n`;
+            const keyboard = [];
+            
+            // Show top 10 results
+            results.slice(0, 10).forEach(u => {
+                const displayName = (u.firstName || '') + (u.lastName ? ' ' + u.lastName : '');
+                const accountsInfo = ` (${u.activeAccounts}/${u.accountCount})`;
+                keyboard.push([{
+                    text: `${displayName}${accountsInfo} • ${formatLastActivity(u.lastAction)}`,
+                    callback_data: `admin_user_${u.chatId}`
+                }]);
+            });
+
+            if (results.length > 10) {
+                message += `<i>מציג 10 מתוך ${results.length} תוצאות...</i>\n`;
+            }
+
+            keyboard.push([{ text: '🔙 חזרה לתפריט', callback_data: 'admin_menu' }]);
+
+            await bot.sendMessage(chatId, message, {
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: keyboard }
+            });
+            return;
+        }
         
-        if (state.action === 'ban') {
+        else if (state.action === 'ban') {
             const reason = text;
             const success = addToBlacklist(state.targetUserId, reason, chatId);
             
@@ -2349,6 +2435,18 @@ app.post('/api/send-message', async (req, res) => {
 
 app.get('/api/broadcasts', (req, res) => {
     res.json(getBroadcasts());
+});
+
+app.post('/api/toggle-broadcast-exclusion', (req, res) => {
+    const { chatId, excluded } = req.body;
+    if (!chatId) return res.status(400).json({ error: 'Missing chatId' });
+
+    if (excluded) {
+        addToBroadcastExclusion(chatId);
+    } else {
+        removeFromBroadcastExclusion(chatId);
+    }
+    res.json({ success: true, isBroadcastExcluded: isBroadcastExcluded(chatId) });
 });
 
 server.listen(port, () => {

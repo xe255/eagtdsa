@@ -18,7 +18,8 @@ if (!fs.existsSync(DB_PATH)) {
         creationEnabled: true,
         whitelist: [],
         whitelistEnabled: false,
-        broadcasts: []
+        broadcasts: [],
+        broadcastExclusion: []
     }, null, 2));
 } else {
     // Migrate existing DB: ensure new fields exist
@@ -30,6 +31,7 @@ if (!fs.existsSync(DB_PATH)) {
     if (!_existing.whitelist) { _existing.whitelist = []; _changed = true; }
     if ((_existing.whitelistEnabled === undefined)) { _existing.whitelistEnabled = false; _changed = true; }
     if (!_existing.broadcasts) { _existing.broadcasts = []; _changed = true; }
+    if (!_existing.broadcastExclusion) { _existing.broadcastExclusion = []; _changed = true; }
     if (_changed) fs.writeFileSync(DB_PATH, JSON.stringify(_existing, null, 2));
 }
 
@@ -415,7 +417,8 @@ function getAllUsers() {
                     lastAction: log.timestamp,
                     accountCount: accounts.length,
                     activeAccounts: accounts.filter(a => a.active).length,
-                    isBlacklisted: isBlacklisted(log.chatId)
+                    isBlacklisted: isBlacklisted(log.chatId),
+                    isBroadcastExcluded: isBroadcastExcluded(log.chatId)
                 });
             } else {
                 const existing = usersMap.get(log.chatId);
@@ -614,6 +617,38 @@ function getBroadcasts() {
     return data.broadcasts || [];
 }
 
+// Broadcast Exclusion functions
+function isBroadcastExcluded(chatId) {
+    const data = getLogs();
+    if (!data.broadcastExclusion) return false;
+    return data.broadcastExclusion.some(id => String(id) === String(chatId));
+}
+
+function addToBroadcastExclusion(chatId) {
+    const data = getLogs();
+    if (!data.broadcastExclusion) data.broadcastExclusion = [];
+    const id = String(chatId);
+    if (!data.broadcastExclusion.includes(id)) {
+        data.broadcastExclusion.push(id);
+        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        return true;
+    }
+    return false;
+}
+
+function removeFromBroadcastExclusion(chatId) {
+    const data = getLogs();
+    if (!data.broadcastExclusion) return false;
+    const id = String(chatId);
+    const index = data.broadcastExclusion.indexOf(id);
+    if (index !== -1) {
+        data.broadcastExclusion.splice(index, 1);
+        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        return true;
+    }
+    return false;
+}
+
 module.exports = { 
     getLogs, 
     addLog, 
@@ -659,5 +694,9 @@ module.exports = {
     addBroadcast,
     updateBroadcastStats,
     logBroadcastClick,
-    getBroadcasts
+    getBroadcasts,
+    // Broadcast Exclusion
+    isBroadcastExcluded,
+    addToBroadcastExclusion,
+    removeFromBroadcastExclusion
 };
