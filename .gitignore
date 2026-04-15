@@ -1,5 +1,6 @@
-# Dependencies
+# Dependencies (always run npm install from repo root — not inside embyil/)
 node_modules/
+embyil/node_modules/
 
 # Environment variables
 .env
@@ -42,9 +43,6 @@ desktop.ini
 dist/
 build/
 *.tgz
-
-# Playwright
-.playwright/
 
 # Sensitive files
 *.pem

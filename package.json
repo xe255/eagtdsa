@@ -5,7 +5,9 @@
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "seed:group-members": "node scripts/seed-group-members.js",
+    "seed:group-members:stdout": "node scripts/seed-group-members.js --stdout-only"
   },
   "keywords": [],
   "author": "",
@@ -14,7 +16,9 @@
   "dependencies": {
     "dotenv": "^17.2.4",
     "express": "^5.2.1",
-    "node-telegram-bot-api": "^0.67.0",
-    "playwright": "^1.57.0"
+    "node-telegram-bot-api": "^0.67.0"
+  },
+  "devDependencies": {
+    "telegram": "^2.26.22"
   }
 }

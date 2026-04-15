@@ -49,7 +49,10 @@ const {
     // Broadcast Exclusion
     isBroadcastExcluded,
     addToBroadcastExclusion,
-    removeFromBroadcastExclusion
+    removeFromBroadcastExclusion,
+    upsertGroupMember,
+    removeGroupMember,
+    getBroadcastRecipients
 } = require('./database');
 
 // --- Configuration ---
@@ -69,8 +72,30 @@ const bot = new TelegramBot(token, {
         interval: 300,
         autoStart: true,
         params: {
-            timeout: 10
+            timeout: 10,
+            // Telegram omits chat_member from default updates; needed to track group roster for broadcasts
+            allowed_updates: ['message', 'callback_query', 'chat_member']
         }
+    }
+});
+
+// Track joins/leaves in the required group for broadcast targeting (ChatMemberUpdated)
+bot.on('chat_member', (cm) => {
+    try {
+        if (!requiredGroupChatIdMatches(cm.chat && cm.chat.id)) return;
+        const newM = cm.new_chat_member;
+        const user = newM && newM.user;
+        if (!user || user.is_bot) return;
+        const st = String(newM.status || '').toLowerCase();
+        if (st === 'left' || st === 'kicked') {
+            removeGroupMember(user.id);
+            return;
+        }
+        if (['creator', 'administrator', 'member', 'restricted'].includes(st)) {
+            upsertGroupMember(user.id, user);
+        }
+    } catch (e) {
+        console.error('chat_member handler:', e.message);
     }
 });
 
@@ -638,7 +663,7 @@ bot.onText(/\/broadcast/, async (msg) => {
         return;
     }
     
-    const users = getAllUsers().filter(u => !u.isBlacklisted);
+    const recipients = getBroadcastRecipients(!!REQUIRED_GROUP_ID);
     
     const broadcastMessage = `
 📢 <b>שידור הודעה</b>
@@ -646,12 +671,10 @@ bot.onText(/\/broadcast/, async (msg) => {
 שלח את ההודעה שברצונך לשדר לכל המשתמשים:
 
 ━━━━━━━━━━━━━━━━━━━━
-👥 <b>יקבלו:</b> ${users.length} משתמשים
-🚫 <b>חסומים:</b> ${getAllUsers().length - users.length}
-
+👥 <b>יקבלו:</b> ${recipients.length} משתמשים
+${REQUIRED_GROUP_ID ? `<i>כולל חברי הקבוצה שנרשמו במעקב (הצטרפות / שימוש בבוט).</i>\n` : ''}
 ⚠️ <b>שים לב:</b>
-• ההודעה תישלח לכל המשתמשים הפעילים
-• משתמשים חסומים לא יקבלו את ההודעה
+• חסומים או מוחרגים משידור לא יקבלו גם אם הם בקבוצה
 • התהליך עשוי לקחת זמן
 
 <i>שלח את ההודעה או שלח "ביטול" לביטול</i>
@@ -679,6 +702,7 @@ bot.onText(/\/start/, async (msg) => {
             await sendJoinRequiredMessage(chatId);
             return;
         }
+        trackUserIfInRequiredGroup(msg.from);
     }
     if (!isAdmin(chatId) && isBlacklisted(chatId)) {
         await bot.sendMessage(chatId, '🚫 אינך מורשה להשתמש בבוט זה.');
@@ -932,6 +956,16 @@ async function hasJoinedGroup(userId) {
     }
 }
 
+function requiredGroupChatIdMatches(chatId) {
+    return !!(REQUIRED_GROUP_ID && chatId != null && String(chatId) === String(REQUIRED_GROUP_ID));
+}
+
+/** Persist user for broadcast list (Telegram has no API to export full member list). */
+function trackUserIfInRequiredGroup(telegramUser) {
+    if (!REQUIRED_GROUP_ID || !telegramUser || telegramUser.is_bot) return;
+    upsertGroupMember(telegramUser.id, telegramUser);
+}
+
 async function sendJoinRequiredMessage(chatId) {
     const message = `
 🔒 <b>נדרשת הצטרפות לקבוצה</b>
@@ -1027,6 +1061,7 @@ bot.on('callback_query', async (callbackQuery) => {
             if (data === 'check_joined_group') {
                 const joined = await hasJoinedGroup(userId);
                 if (joined) {
+                    trackUserIfInRequiredGroup(callbackQuery.from);
                     bot.answerCallbackQuery(callbackQuery.id, { text: 'מאומת! ברוך הבא' });
                     await sendMainMenu(chatId);
                     return;
@@ -1718,7 +1753,7 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
         
         else if (data === 'admin_broadcast') {
             await bot.answerCallbackQuery(callbackQuery.id);
-            const users = getAllUsers().filter(u => !u.isBlacklisted && !u.isBroadcastExcluded);
+            const recipients = getBroadcastRecipients(!!REQUIRED_GROUP_ID);
             
             const broadcastMessage = `
 📢 <b>שידור הודעה</b>
@@ -1726,12 +1761,10 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
 שלח את ההודעה שברצונך לשדר לכל המשתמשים:
 
 ━━━━━━━━━━━━━━━━━━━━
-👥 <b>יקבלו:</b> ${users.length} משתמשים
-🚫 <b>חסומים/מוחרגים:</b> ${getAllUsers().length - users.length}
-
+👥 <b>יקבלו:</b> ${recipients.length} משתמשים
+${REQUIRED_GROUP_ID ? `<i>כולל חברי הקבוצה במעקב (הצטרפות / שימוש בבוט).</i>\n` : ''}
 ⚠️ <b>שים לב:</b>
-• ההודעה תישלח לכל המשתמשים הפעילים
-• משתמשים חסומים לא יקבלו את ההודעה
+• חסומים או מוחרגים משידור לא יקבלו גם אם הם בקבוצה
 • התהליך עשוי לקחת זמן
 
 <i>שלח את ההודעה או לחץ ביטול</i>
@@ -1833,7 +1866,7 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
         
         else if (data.startsWith('admin_confirm_broadcast_')) {
             const broadcastMsgId = data.replace('admin_confirm_broadcast_', '');
-            const users = getAllUsers().filter(u => !u.isBlacklisted && !u.isBroadcastExcluded);
+            const users = getBroadcastRecipients(!!REQUIRED_GROUP_ID);
             const state = adminStates.get(chatId);
             
             // Log broadcast to database
@@ -2077,6 +2110,17 @@ ${user.isBlacklisted ? '🚫 <b>סטטוס:</b> חסום\n' : '✅ <b>סטטוס
 // Handle admin conversation states
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
+
+    if (requiredGroupChatIdMatches(chatId)) {
+        if (msg.new_chat_members && msg.new_chat_members.length) {
+            for (const u of msg.new_chat_members) {
+                if (!u.is_bot) upsertGroupMember(u.id, u);
+            }
+        }
+        if (msg.left_chat_member && !msg.left_chat_member.is_bot) {
+            removeGroupMember(msg.left_chat_member.id);
+        }
+    }
 
     // Handle access code input (works for any user, not just admins)
     if (adminStates.has(chatId) && adminStates.get(chatId).action === 'access_code') {

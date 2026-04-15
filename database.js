@@ -18,7 +18,8 @@ function createDefaultDb() {
         whitelist: [],
         whitelistEnabled: false,
         broadcasts: [],
-        broadcastExclusion: []
+        broadcastExclusion: [],
+        groupMembers: {}
     };
 }
 
@@ -42,6 +43,10 @@ function ensureDbShape(data) {
     if (data.whitelistEnabled === undefined) { data.whitelistEnabled = false; changed = true; }
     if (!data.broadcasts) { data.broadcasts = []; changed = true; }
     if (!data.broadcastExclusion) { data.broadcastExclusion = []; changed = true; }
+    if (!data.groupMembers || typeof data.groupMembers !== 'object' || Array.isArray(data.groupMembers)) {
+        data.groupMembers = {};
+        changed = true;
+    }
     return changed;
 }
 
@@ -773,6 +778,80 @@ function removeFromBroadcastExclusion(chatId) {
     return false;
 }
 
+/** Remember a user as currently in the required group (for broadcast list). Telegram has no "list all members" API. */
+function upsertGroupMember(chatId, telegramUser) {
+    const data = getLogs();
+    if (!data.groupMembers) data.groupMembers = {};
+    if (telegramUser && telegramUser.is_bot) return;
+    const id = String(chatId);
+    const prev = data.groupMembers[id] || {};
+    data.groupMembers[id] = {
+        username: telegramUser?.username ?? prev.username ?? null,
+        firstName: telegramUser?.first_name ?? telegramUser?.firstName ?? prev.firstName ?? null,
+        lastName: telegramUser?.last_name ?? telegramUser?.lastName ?? prev.lastName ?? null,
+        updatedAt: new Date().toISOString()
+    };
+    persistDb(data);
+}
+
+function removeGroupMember(chatId) {
+    const data = getLogs();
+    if (!data.groupMembers) return;
+    const id = String(chatId);
+    if (data.groupMembers[id]) {
+        delete data.groupMembers[id];
+        persistDb(data);
+    }
+}
+
+/** Bulk seed groupMembers (e.g. from scripts/seed-group-members.js). Skips bots. */
+function mergeGroupMembersFromExport(userList) {
+    const data = readDbSafe();
+    ensureDbShape(data);
+    if (!data.groupMembers) data.groupMembers = {};
+    const now = new Date().toISOString();
+    let added = 0;
+    for (const u of userList) {
+        if (!u || u.bot) continue;
+        const id = String(u.id);
+        data.groupMembers[id] = {
+            username: u.username != null ? u.username : null,
+            firstName: u.firstName != null ? u.firstName : null,
+            lastName: u.lastName != null ? u.lastName : null,
+            updatedAt: now
+        };
+        added++;
+    }
+    persistDb(data);
+    return { merged: added, totalKeys: Object.keys(data.groupMembers).length };
+}
+
+/**
+ * Users who should receive admin broadcasts: everyone in logs (not blocked / not broadcast-excluded)
+ * plus group members we are tracking when mergeGroupMembers is true.
+ */
+function getBroadcastRecipients(mergeGroupMembers) {
+    const eligibleFromLogs = getAllUsers().filter(u => !u.isBlacklisted && !u.isBroadcastExcluded);
+    if (!mergeGroupMembers) return eligibleFromLogs;
+
+    const data = getLogs();
+    const map = new Map();
+    for (const u of eligibleFromLogs) {
+        map.set(String(u.chatId), u);
+    }
+    const gm = data.groupMembers;
+    if (!gm || typeof gm !== 'object') return Array.from(map.values());
+
+    for (const idStr of Object.keys(gm)) {
+        if (isBlacklisted(idStr) || isBroadcastExcluded(idStr)) continue;
+        if (!map.has(idStr)) {
+            const chatId = /^\d+$/.test(idStr) ? Number(idStr) : idStr;
+            map.set(idStr, { chatId });
+        }
+    }
+    return Array.from(map.values());
+}
+
 module.exports = { 
     getLogs, 
     addLog, 
@@ -822,5 +901,9 @@ module.exports = {
     // Broadcast Exclusion
     isBroadcastExcluded,
     addToBroadcastExclusion,
-    removeFromBroadcastExclusion
+    removeFromBroadcastExclusion,
+    upsertGroupMember,
+    removeGroupMember,
+    getBroadcastRecipients,
+    mergeGroupMembersFromExport
 };

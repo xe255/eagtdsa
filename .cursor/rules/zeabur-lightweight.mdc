@@ -12,7 +12,7 @@ This project runs on **Zeabur.com free tier**. Optimize for low memory and CPU s
 - **Minimize dependencies**: Add packages only when necessary; prefer built-in Node APIs (`fs`, `http`, `path`, `url`) over heavy libraries.
 - **Avoid large in-memory data**: Don’t load entire `db.json` into memory repeatedly; read/write in small, focused operations where possible.
 - **Use simple data storage**: Keep using `db.json` (single file) unless scale demands otherwise; no extra DB services on free tier.
-- **Limit concurrency**: Avoid spawning many parallel operations (e.g. cap broadcast chunks, don’t run many Playwright/browser instances at once).
+- **Limit concurrency**: Avoid spawning many parallel operations (e.g. cap broadcast chunks; don’t stack heavy background work).
 - **Prefer lightweight patterns**: Use `setInterval`/single loops for background tasks; avoid heavy frameworks or real-time engines unless essential.
 - **Trim logs**: Log only what’s needed (errors, key events); avoid verbose debug logs in production.
 
@@ -25,4 +25,4 @@ This project runs on **Zeabur.com free tier**. Optimize for low memory and CPU s
 
 ## When suggesting features
 
-Prefer solutions that use existing stack (Node, Express, file-based DB, Telegram Bot API, Playwright only where needed). If a feature would significantly increase memory or CPU, suggest a lighter alternative or a clear trade-off.
+Prefer solutions that use the existing stack (Node, Express, file-based DB, Telegram Bot API, `fetch` to external HTTP APIs). If a feature would significantly increase memory or CPU, suggest a lighter alternative or a clear trade-off.
