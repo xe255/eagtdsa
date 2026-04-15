@@ -3,10 +3,9 @@ const path = require('path');
 
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'db.json');
 
-// Initialize DB if not exists
-if (!fs.existsSync(DB_PATH)) {
-    fs.writeFileSync(DB_PATH, JSON.stringify({ 
-        logs: [], 
+function createDefaultDb() {
+    return {
+        logs: [],
         stats: { totalCreated: 0, activeUsers: 0 },
         chats: {},
         progress: {},
@@ -20,24 +19,101 @@ if (!fs.existsSync(DB_PATH)) {
         whitelistEnabled: false,
         broadcasts: [],
         broadcastExclusion: []
-    }, null, 2));
-} else {
-    // Migrate existing DB: ensure new fields exist
-    const _existing = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
-    let _changed = false;
-    if (!_existing.admins) { _existing.admins = []; _changed = true; }
-    if (!_existing.unlimitedUsers) { _existing.unlimitedUsers = []; _changed = true; }
-    if (_existing.creationEnabled === undefined) { _existing.creationEnabled = true; _changed = true; }
-    if (!_existing.whitelist) { _existing.whitelist = []; _changed = true; }
-    if ((_existing.whitelistEnabled === undefined)) { _existing.whitelistEnabled = false; _changed = true; }
-    if (!_existing.broadcasts) { _existing.broadcasts = []; _changed = true; }
-    if (!_existing.broadcastExclusion) { _existing.broadcastExclusion = []; _changed = true; }
-    if (_changed) fs.writeFileSync(DB_PATH, JSON.stringify(_existing, null, 2));
+    };
 }
 
+/** Ensure required keys exist (migrations). Returns true if db should be persisted. */
+function ensureDbShape(data) {
+    let changed = false;
+    if (!Array.isArray(data.logs)) { data.logs = []; changed = true; }
+    if (!data.stats || typeof data.stats !== 'object') {
+        data.stats = { totalCreated: 0, activeUsers: 0 };
+        changed = true;
+    }
+    if (!data.chats || typeof data.chats !== 'object') { data.chats = {}; changed = true; }
+    if (!data.progress || typeof data.progress !== 'object') { data.progress = {}; changed = true; }
+    if (!data.accounts || typeof data.accounts !== 'object') { data.accounts = {}; changed = true; }
+    if (!data.userLimits || typeof data.userLimits !== 'object') { data.userLimits = {}; changed = true; }
+    if (!data.notifications || typeof data.notifications !== 'object') { data.notifications = {}; changed = true; }
+    if (!data.admins) { data.admins = []; changed = true; }
+    if (!data.unlimitedUsers) { data.unlimitedUsers = []; changed = true; }
+    if (data.creationEnabled === undefined) { data.creationEnabled = true; changed = true; }
+    if (!data.whitelist) { data.whitelist = []; changed = true; }
+    if (data.whitelistEnabled === undefined) { data.whitelistEnabled = false; changed = true; }
+    if (!data.broadcasts) { data.broadcasts = []; changed = true; }
+    if (!data.broadcastExclusion) { data.broadcastExclusion = []; changed = true; }
+    return changed;
+}
+
+/** Write full db object. On Linux (Zeabur) use temp + rename so readers rarely see partial JSON. */
+function persistDb(data) {
+    const json = JSON.stringify(data, null, 2);
+    const dir = path.dirname(DB_PATH);
+    if (process.platform === 'win32') {
+        fs.writeFileSync(DB_PATH, json, 'utf8');
+        return;
+    }
+    try {
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+    } catch (_) { /* ignore */ }
+    const tmp = path.join(dir, `.${path.basename(DB_PATH)}.${process.pid}.tmp`);
+    fs.writeFileSync(tmp, json, 'utf8');
+    fs.renameSync(tmp, DB_PATH);
+}
+
+function readDbSafe() {
+    let raw;
+    try {
+        raw = fs.readFileSync(DB_PATH, 'utf8');
+    } catch (e) {
+        if (e.code === 'ENOENT') {
+            const data = createDefaultDb();
+            persistDb(data);
+            return data;
+        }
+        throw e;
+    }
+    const trimmed = raw.trim();
+    if (!trimmed) {
+        const data = createDefaultDb();
+        persistDb(data);
+        return data;
+    }
+    try {
+        const data = JSON.parse(trimmed);
+        if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+            throw new SyntaxError('db root must be an object');
+        }
+        if (ensureDbShape(data)) {
+            persistDb(data);
+        }
+        return data;
+    } catch (e) {
+        console.error('[database] db.json unreadable (empty or corrupt), reinitializing:', e.message);
+        const data = createDefaultDb();
+        persistDb(data);
+        return data;
+    }
+}
+
+// Initialize DB if not exists; migrate / repair on load
+if (!fs.existsSync(DB_PATH)) {
+    persistDb(createDefaultDb());
+} else {
+    readDbSafe();
+}
+
+if (process.env.NODE_ENV === 'production' && !process.env.DB_PATH) {
+    console.warn(
+        '[database] DB_PATH is not set. On Zeabur the container disk is ephemeral — redeploys reset db.json. Mount a volume and set DB_PATH (see .env.example).'
+    );
+}
+console.log('[database] using', path.resolve(DB_PATH));
+
 function getLogs() {
-    const data = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
-    return data;
+    return readDbSafe();
 }
 
 function addLog(chatId, username, action, status, result = null, userInfo = null) {
@@ -63,7 +139,7 @@ function addLog(chatId, username, action, status, result = null, userInfo = null
     const uniqueUsers = new Set(data.logs.map(l => l.chatId));
     data.stats.activeUsers = uniqueUsers.size;
 
-    fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+    persistDb(data);
 }
 
 function addChatMessage(chatId, username, fromAdmin, message) {
@@ -83,7 +159,7 @@ function addChatMessage(chatId, username, fromAdmin, message) {
         message: message
     });
     
-    fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+    persistDb(data);
 }
 
 function getChatMessages(chatId) {
@@ -191,7 +267,7 @@ function updateProgress(chatId, progress, message) {
         timestamp: new Date().toISOString()
     };
     
-    fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+    persistDb(data);
 }
 
 function getProgress(chatId) {
@@ -204,7 +280,7 @@ function clearProgress(chatId) {
     const data = getLogs();
     if (data.progress && data.progress[chatId]) {
         delete data.progress[chatId];
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        persistDb(data);
     }
 }
 
@@ -226,7 +302,7 @@ function addAccount(chatId, username, accountData) {
     };
     
     data.accounts[chatId].push(account);
-    fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+    persistDb(data);
     
     return account;
 }
@@ -293,7 +369,7 @@ function updateUserLimit(chatId) {
         lastCreated: new Date().toISOString()
     };
     
-    fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+    persistDb(data);
 }
 
 function getExpiringAccounts() {
@@ -328,7 +404,7 @@ function getExpiringAccounts() {
     
     if (expiringAccounts.length > 0 || Object.keys(data.accounts).some(chatId => 
         data.accounts[chatId].some(acc => !acc.active && acc.active !== false))) {
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        persistDb(data);
     }
     
     return expiringAccounts;
@@ -341,7 +417,7 @@ function markNotificationSent(chatId, accountId) {
     const account = data.accounts[chatId].find(acc => acc.id === accountId);
     if (account) {
         account.notificationSent = true;
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        persistDb(data);
     }
 }
 
@@ -363,7 +439,7 @@ function addToBlacklist(chatId, reason, adminId) {
             addedBy: adminId,
             addedAt: new Date().toISOString()
         });
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        persistDb(data);
         return true;
     }
     return false;
@@ -376,7 +452,7 @@ function removeFromBlacklist(chatId) {
     const index = data.blacklist.findIndex(b => String(b.chatId) === id);
     if (index !== -1) {
         data.blacklist.splice(index, 1);
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        persistDb(data);
         return true;
     }
     return false;
@@ -497,7 +573,7 @@ function addUnlimitedUser(chatId) {
     const id = String(chatId);
     if (!data.unlimitedUsers.includes(id)) {
         data.unlimitedUsers.push(id);
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        persistDb(data);
         return true;
     }
     return false;
@@ -510,7 +586,7 @@ function removeUnlimitedUser(chatId) {
     const index = data.unlimitedUsers.indexOf(id);
     if (index !== -1) {
         data.unlimitedUsers.splice(index, 1);
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        persistDb(data);
         return true;
     }
     return false;
@@ -525,7 +601,7 @@ function isCreationEnabled() {
 function setCreationEnabled(enabled) {
     const data = getLogs();
     data.creationEnabled = enabled;
-    fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+    persistDb(data);
 }
 
 // Whitelist
@@ -537,7 +613,7 @@ function isWhitelistEnabled() {
 function setWhitelistEnabled(enabled) {
     const data = getLogs();
     data.whitelistEnabled = enabled;
-    fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+    persistDb(data);
 }
 
 function getWhitelist() {
@@ -557,7 +633,7 @@ function addToWhitelist(chatId, addedBy, note = '') {
     const id = String(chatId);
     if (!data.whitelist.some(e => String(e.chatId) === id)) {
         data.whitelist.push({ chatId: id, addedBy: String(addedBy), note, addedAt: new Date().toISOString() });
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        persistDb(data);
         return true;
     }
     return false;
@@ -570,7 +646,7 @@ function removeFromWhitelist(chatId) {
     const index = data.whitelist.findIndex(e => String(e.chatId) === id);
     if (index !== -1) {
         data.whitelist.splice(index, 1);
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        persistDb(data);
         return true;
     }
     return false;
@@ -588,7 +664,7 @@ function addDbAdmin(chatId) {
     const id = String(chatId);
     if (!data.admins.includes(id)) {
         data.admins.push(id);
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        persistDb(data);
         return true;
     }
     return false;
@@ -601,7 +677,7 @@ function removeDbAdmin(chatId) {
     const index = data.admins.indexOf(id);
     if (index !== -1) {
         data.admins.splice(index, 1);
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        persistDb(data);
         return true;
     }
     return false;
@@ -625,7 +701,7 @@ function addBroadcast(broadcastData) {
     };
     
     data.broadcasts.unshift(newBroadcast);
-    fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+    persistDb(data);
     return newBroadcast;
 }
 
@@ -637,7 +713,7 @@ function updateBroadcastStats(id, stats) {
     if (broadcast) {
         if (stats.sentCount !== undefined) broadcast.sentCount = stats.sentCount;
         if (stats.failedCount !== undefined) broadcast.failedCount = stats.failedCount;
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        persistDb(data);
     }
 }
 
@@ -654,7 +730,7 @@ function logBroadcastClick(id, userInfo = null) {
                 ...userInfo
             });
         }
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        persistDb(data);
         return broadcast.targetUrl;
     }
     return null;
@@ -678,7 +754,7 @@ function addToBroadcastExclusion(chatId) {
     const id = String(chatId);
     if (!data.broadcastExclusion.includes(id)) {
         data.broadcastExclusion.push(id);
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        persistDb(data);
         return true;
     }
     return false;
@@ -691,7 +767,7 @@ function removeFromBroadcastExclusion(chatId) {
     const index = data.broadcastExclusion.indexOf(id);
     if (index !== -1) {
         data.broadcastExclusion.splice(index, 1);
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+        persistDb(data);
         return true;
     }
     return false;
