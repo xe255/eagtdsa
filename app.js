@@ -52,7 +52,8 @@ const {
     removeFromBroadcastExclusion,
     upsertGroupMember,
     removeGroupMember,
-    getBroadcastRecipients
+    getBroadcastRecipients,
+    pullSupabaseGroupMembersIntoMemDb
 } = require('./database');
 
 // --- Configuration ---
@@ -2587,4 +2588,16 @@ function startKeepAliveSelfPing() {
 server.listen(port, () => {
     console.log(`Listening on port ${port}`);
     startKeepAliveSelfPing();
+
+    const supabaseMergeMs = parseInt(process.env.SUPABASE_MERGE_INTERVAL_MS || '3600000', 10);
+    if (supabaseMergeMs > 0) {
+        setInterval(() => {
+            pullSupabaseGroupMembersIntoMemDb().catch((e) =>
+                console.warn('[database] Supabase roster pull:', e.message)
+            );
+        }, supabaseMergeMs);
+        console.log(
+            `Supabase roster: pull missing members every ${Math.round(supabaseMergeMs / 1000)}s (set SUPABASE_MERGE_INTERVAL_MS=0 to disable)`
+        );
+    }
 });

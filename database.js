@@ -225,18 +225,29 @@ async function ready() {
         }
         try {
             const { mergeSupabaseGroupMembersIntoMemDb } = require('./supabaseSync');
-            const n = await mergeSupabaseGroupMembersIntoMemDb(memDb);
-            if (n > 0) {
+            const { added } = await mergeSupabaseGroupMembersIntoMemDb(memDb);
+            if (added > 0) {
                 ensureDbShape(memDb);
                 writeDbToDisk(memDb);
                 scheduleUpstashPersist();
-                console.log('[database] merged', n, 'users from Supabase into groupMembers');
             }
         } catch (e) {
             console.warn('[database] Supabase merge skipped:', e.message);
         }
     })();
     await readyPromise;
+}
+
+/** Re-fetch full telegram_users from Supabase into groupMembers (missing keys only). Safe to call periodically. */
+async function pullSupabaseGroupMembersIntoMemDb() {
+    const data = readDbSafe();
+    const { mergeSupabaseGroupMembersIntoMemDb } = require('./supabaseSync');
+    const { added } = await mergeSupabaseGroupMembersIntoMemDb(data);
+    if (added > 0) {
+        ensureDbShape(data);
+        persistDb(data);
+    }
+    return added;
 }
 
 /** Write full db object to disk and queue remote backup. */
@@ -1145,5 +1156,6 @@ module.exports = {
     upsertGroupMember,
     removeGroupMember,
     getBroadcastRecipients,
-    mergeGroupMembersFromExport
+    mergeGroupMembersFromExport,
+    pullSupabaseGroupMembersIntoMemDb
 };

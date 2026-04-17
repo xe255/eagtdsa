@@ -30,38 +30,57 @@ function requiredGroupIdNum() {
     return Number.isFinite(n) ? n : null;
 }
 
+const ROSTER_PAGE = 500;
+
 /**
  * Pull telegram_users from Supabase into memDb.groupMembers (only keys missing locally).
- * @returns {Promise<number>} number of new members merged
+ * Paginates so the full table is read (default PostgREST limits can cap a single response at ~100–1000 rows).
+ * @returns {Promise<{ added: number, scanned: number }>}
  */
 async function mergeSupabaseGroupMembersIntoMemDb(memDb) {
     const client = getClient();
-    if (!client) return 0;
+    if (!client) return { added: 0, scanned: 0 };
     if (!memDb.groupMembers) memDb.groupMembers = {};
     const gm = memDb.groupMembers;
 
-    const { data: rows, error } = await client
-        .from('telegram_users')
-        .select('telegram_user_id,username,first_name,last_name,is_bot,updated_at')
-        .eq('is_bot', false)
-        .order('telegram_user_id', { ascending: true });
-
-    if (error) throw new Error(error.message);
-    if (!rows || rows.length === 0) return 0;
-
     let added = 0;
-    for (const r of rows) {
-        const id = String(r.telegram_user_id);
-        if (gm[id]) continue;
-        gm[id] = {
-            username: r.username ?? null,
-            firstName: r.first_name ?? null,
-            lastName: r.last_name ?? null,
-            updatedAt: r.updated_at || new Date().toISOString()
-        };
-        added++;
+    let scanned = 0;
+    let offset = 0;
+
+    while (true) {
+        const { data: rows, error } = await client
+            .from('telegram_users')
+            .select('telegram_user_id,username,first_name,last_name,is_bot,updated_at')
+            .eq('is_bot', false)
+            .order('telegram_user_id', { ascending: true })
+            .range(offset, offset + ROSTER_PAGE - 1);
+
+        if (error) throw new Error(error.message);
+        if (!rows || rows.length === 0) break;
+
+        scanned += rows.length;
+        for (const r of rows) {
+            const id = String(r.telegram_user_id);
+            if (gm[id]) continue;
+            gm[id] = {
+                username: r.username ?? null,
+                firstName: r.first_name ?? null,
+                lastName: r.last_name ?? null,
+                updatedAt: r.updated_at || new Date().toISOString()
+            };
+            added++;
+        }
+
+        if (rows.length < ROSTER_PAGE) break;
+        offset += ROSTER_PAGE;
     }
-    return added;
+
+    if (scanned > 0) {
+        console.log(
+            `[supabase] roster pull: ${scanned} non-bot row(s) from cloud, ${added} new key(s) merged into groupMembers`
+        );
+    }
+    return { added, scanned };
 }
 
 function rowPayload(partial) {
