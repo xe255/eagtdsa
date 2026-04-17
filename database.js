@@ -1,7 +1,20 @@
 const fs = require('fs');
 const path = require('path');
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'db.json');
+/** Linux deploy paths like /data/db.json in .env break on Windows — use project db.json locally. */
+function resolveDbPath() {
+    let p = process.env.DB_PATH || path.join(__dirname, 'db.json');
+    const norm = String(p).replace(/\\/g, '/');
+    if (
+        process.platform === 'win32' &&
+        (norm.startsWith('/data/') || norm.startsWith('/app/'))
+    ) {
+        return path.join(__dirname, 'db.json');
+    }
+    return p;
+}
+
+const DB_PATH = resolveDbPath();
 
 function createDefaultDb() {
     return {

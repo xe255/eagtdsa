@@ -9,7 +9,10 @@
  * Env:
  *   TELEGRAM_API_ID, TELEGRAM_API_HASH (https://my.telegram.org)
  *   TELEGRAM_USER_SESSION — optional; if empty, you will log in once and must save the printed session string
- *   REQUIRED_GROUP_ID or TELEGRAM_GROUP_ID — same -100… id as the bot uses
+ *   REQUIRED_GROUP_ID or TELEGRAM_GROUP_ID — full supergroup id (-100…) from the bot’s /getgroupid
+ *   TELEGRAM_SEED_GROUP — optional: @groupusername or t.me/… if id resolution fails
+ *
+ * The Telegram USER you log into must already be a member of the group.
  *
  * Optional: DB_PATH — merges into db.json groupMembers (unless --stdout-only)
  */
@@ -47,15 +50,21 @@ async function main() {
     const apiId = parseApiId();
     const apiHash = (process.env.TELEGRAM_API_HASH || '').trim();
     const sessionStr = (process.env.TELEGRAM_USER_SESSION || '').trim();
-    const groupRaw =
-        (process.env.REQUIRED_GROUP_ID || process.env.TELEGRAM_GROUP_ID || '').trim();
+    const groupRaw = (
+        process.env.TELEGRAM_SEED_GROUP ||
+        process.env.REQUIRED_GROUP_ID ||
+        process.env.TELEGRAM_GROUP_ID ||
+        ''
+    ).trim();
 
     if (!apiId || Number.isNaN(apiId) || !apiHash) {
         console.error('Set TELEGRAM_API_ID and TELEGRAM_API_HASH (https://my.telegram.org).');
         process.exit(1);
     }
     if (!groupRaw) {
-        console.error('Set REQUIRED_GROUP_ID or TELEGRAM_GROUP_ID to your supergroup id (e.g. -100…).');
+        console.error(
+            'Set REQUIRED_GROUP_ID (or TELEGRAM_GROUP_ID / TELEGRAM_SEED_GROUP) to your supergroup (-100…) or @username.'
+        );
         process.exit(1);
     }
 
@@ -87,8 +96,29 @@ async function main() {
         }
     }
 
-    const entity =
-        /^-?\d+$/.test(groupRaw) ? groupRaw : (await client.getEntity(groupRaw));
+    console.error('Loading dialogs (helps GramJS resolve supergroups you are in)…');
+    await client.getDialogs({ limit: 500 }).catch((err) => {
+        console.warn('[seed] getDialogs:', err.message || err);
+    });
+
+    let entity;
+    try {
+        entity = await client.getEntity(groupRaw);
+    } catch (e) {
+        console.error('\n[getEntity failed]', e.message || e);
+        console.error('Fix checklist:');
+        console.error(
+            '  1) Join the group with THIS user account (the phone you used for GramJS), not only the bot.'
+        );
+        console.error(
+            '  2) Use the full id from the bot’s /getgroupid (e.g. -1001234567890), no typos.'
+        );
+        console.error(
+            '  3) For a public group, set TELEGRAM_SEED_GROUP=@YourGroupUsername in .env and retry.'
+        );
+        console.error('  4) Open the group in Telegram once, then run this script again.\n');
+        throw e;
+    }
 
     console.error('Fetching participants (may take a while for large groups)…');
     const users = await getParticipants(client, entity, {
