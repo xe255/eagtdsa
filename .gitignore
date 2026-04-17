@@ -10,6 +10,7 @@ embyil/node_modules/
 # Database files
 db.json
 **/db.json
+db (*).json
 *.db
 *.sqlite
 

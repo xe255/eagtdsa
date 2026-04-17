@@ -59,6 +59,11 @@ async function main() {
         process.exit(1);
     }
 
+    if (!stdoutOnly) {
+        const database = require('../database');
+        await database.ready();
+    }
+
     const stringSession = new StringSession(sessionStr);
     const client = new TelegramClient(stringSession, apiId, apiHash, {
         connectionRetries: 5

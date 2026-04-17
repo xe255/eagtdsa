@@ -49,4 +49,4 @@ echo.
 echo Press Ctrl+C to stop the application
 echo ================================================
 echo.
-node app.js
+node start.js

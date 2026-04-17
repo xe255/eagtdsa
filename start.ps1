@@ -51,4 +51,4 @@ Write-Host "Press Ctrl+C to stop the application" -ForegroundColor Yellow
 Write-Host "================================================" -ForegroundColor Green
 Write-Host ""
 
-node app.js
+node start.js

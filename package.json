@@ -4,16 +4,18 @@
   "description": "",
   "main": "app.js",
   "scripts": {
-    "start": "node app.js",
+    "start": "node start.js",
     "test": "echo \"Error: no test specified\" && exit 1",
     "seed:group-members": "node scripts/seed-group-members.js",
-    "seed:group-members:stdout": "node scripts/seed-group-members.js --stdout-only"
+    "seed:group-members:stdout": "node scripts/seed-group-members.js --stdout-only",
+    "backfill:supabase": "node scripts/backfill-supabase-users.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@supabase/supabase-js": "^2.103.3",
     "dotenv": "^17.2.4",
     "express": "^5.2.1",
     "node-telegram-bot-api": "^0.67.0"

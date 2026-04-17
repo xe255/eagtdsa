@@ -50,8 +50,53 @@ function ensureDbShape(data) {
     return changed;
 }
 
-/** Write full db object. On Linux (Zeabur) use temp + rename so readers rarely see partial JSON. */
-function persistDb(data) {
+/** In-memory DB (single object mutated by callers). Filled by ready() or lazy file load. */
+let memDb = null;
+
+const UPSTASH_URL = (process.env.UPSTASH_REDIS_REST_URL || '').trim().replace(/\/$/, '');
+const UPSTASH_TOKEN = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
+const UPSTASH_KEY = (process.env.UPSTASH_REDIS_DB_KEY || 'embyil-db').trim();
+const USE_UPSTASH = Boolean(UPSTASH_URL && UPSTASH_TOKEN);
+
+let upstashFlushTimer = null;
+let upstashFlushPending = false;
+let readyPromise = null;
+
+async function upstashExec(cmd) {
+    const res = await fetch(UPSTASH_URL, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+        body: JSON.stringify(cmd)
+    });
+    const j = await res.json().catch(() => ({}));
+    if (j.error) {
+        throw new Error(String(j.error));
+    }
+    if (!res.ok) {
+        throw new Error(`Upstash HTTP ${res.status}`);
+    }
+    return j;
+}
+
+async function upstashGetDbJson() {
+    const j = await upstashExec(['GET', UPSTASH_KEY]);
+    if (j.result == null || j.result === '') return null;
+    const str = typeof j.result === 'string' ? j.result : String(j.result);
+    const trimmed = str.trim();
+    if (!trimmed) return null;
+    const data = JSON.parse(trimmed);
+    if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+        throw new SyntaxError('remote db root must be an object');
+    }
+    return data;
+}
+
+async function upstashSetDbJson(compactJson) {
+    await upstashExec(['SET', UPSTASH_KEY, compactJson]);
+}
+
+/** Write full db object to local path (ephemeral on Render free). */
+function writeDbToDisk(data) {
     const json = JSON.stringify(data, null, 2);
     const dir = path.dirname(DB_PATH);
     if (process.platform === 'win32') {
@@ -68,54 +113,156 @@ function persistDb(data) {
     fs.renameSync(tmp, DB_PATH);
 }
 
-function readDbSafe() {
+function scheduleUpstashPersist() {
+    if (!USE_UPSTASH || !memDb) return;
+    upstashFlushPending = true;
+    clearTimeout(upstashFlushTimer);
+    upstashFlushTimer = setTimeout(flushUpstashDebounced, 2000);
+}
+
+async function flushUpstashDebounced() {
+    upstashFlushTimer = null;
+    if (!USE_UPSTASH || !memDb || !upstashFlushPending) return;
+    upstashFlushPending = false;
+    try {
+        await upstashSetDbJson(JSON.stringify(memDb));
+    } catch (e) {
+        console.error('[database] Upstash SET failed:', e.message);
+        upstashFlushPending = true;
+    }
+}
+
+async function flushUpstashFinal() {
+    clearTimeout(upstashFlushTimer);
+    upstashFlushTimer = null;
+    if (!USE_UPSTASH || !memDb) return;
+    try {
+        await upstashSetDbJson(JSON.stringify(memDb));
+    } catch (e) {
+        console.error('[database] Upstash final SET failed:', e.message);
+    }
+}
+
+function loadFromFileSyncOrDefault() {
     let raw;
     try {
         raw = fs.readFileSync(DB_PATH, 'utf8');
     } catch (e) {
         if (e.code === 'ENOENT') {
-            const data = createDefaultDb();
-            persistDb(data);
-            return data;
+            const fresh = createDefaultDb();
+            try {
+                writeDbToDisk(fresh);
+            } catch (_) { /* ignore */ }
+            return fresh;
         }
         throw e;
     }
     const trimmed = raw.trim();
     if (!trimmed) {
-        const data = createDefaultDb();
-        persistDb(data);
-        return data;
+        const d = createDefaultDb();
+        try {
+            writeDbToDisk(d);
+        } catch (_) { /* ignore */ }
+        return d;
     }
     try {
         const data = JSON.parse(trimmed);
         if (typeof data !== 'object' || data === null || Array.isArray(data)) {
             throw new SyntaxError('db root must be an object');
         }
-        if (ensureDbShape(data)) {
-            persistDb(data);
-        }
+        ensureDbShape(data);
         return data;
     } catch (e) {
         console.error('[database] db.json unreadable (empty or corrupt), reinitializing:', e.message);
-        const data = createDefaultDb();
-        persistDb(data);
-        return data;
+        const d = createDefaultDb();
+        try {
+            writeDbToDisk(d);
+        } catch (_) { /* ignore */ }
+        return d;
     }
 }
 
-// Initialize DB if not exists; migrate / repair on load
-if (!fs.existsSync(DB_PATH)) {
-    persistDb(createDefaultDb());
-} else {
-    readDbSafe();
+/**
+ * Call once before using the DB when UPSTASH_* is set (npm start → start.js).
+ * Loads from Upstash if present, else from db.json.
+ */
+async function ready() {
+    if (memDb !== null) return;
+    if (readyPromise) return readyPromise;
+    readyPromise = (async () => {
+        if (USE_UPSTASH) {
+            try {
+                const remote = await upstashGetDbJson();
+                if (remote) {
+                    memDb = remote;
+                    ensureDbShape(memDb);
+                    writeDbToDisk(memDb);
+                    console.log('[database] loaded from Upstash (', UPSTASH_KEY, ')');
+                }
+            } catch (e) {
+                console.warn('[database] Upstash GET failed, using local file:', e.message);
+            }
+        }
+        if (memDb === null) {
+            memDb = loadFromFileSyncOrDefault();
+            if (ensureDbShape(memDb)) {
+                writeDbToDisk(memDb);
+            }
+            console.log('[database] using', path.resolve(DB_PATH));
+        }
+        try {
+            const { mergeSupabaseGroupMembersIntoMemDb } = require('./supabaseSync');
+            const n = await mergeSupabaseGroupMembersIntoMemDb(memDb);
+            if (n > 0) {
+                ensureDbShape(memDb);
+                writeDbToDisk(memDb);
+                scheduleUpstashPersist();
+                console.log('[database] merged', n, 'users from Supabase into groupMembers');
+            }
+        } catch (e) {
+            console.warn('[database] Supabase merge skipped:', e.message);
+        }
+    })();
+    await readyPromise;
 }
 
-if (process.env.NODE_ENV === 'production' && !process.env.DB_PATH) {
+/** Write full db object to disk and queue remote backup. */
+function persistDb(data) {
+    memDb = data;
+    writeDbToDisk(data);
+    scheduleUpstashPersist();
+}
+
+function readDbSafe() {
+    if (memDb === null) {
+        if (USE_UPSTASH) {
+            console.error(
+                '[database] UPSTASH_* is set but database.ready() was not called. Use `npm start` (node start.js).'
+            );
+            process.exit(1);
+        }
+        memDb = loadFromFileSyncOrDefault();
+    }
+    if (ensureDbShape(memDb)) {
+        persistDb(memDb);
+    }
+    return memDb;
+}
+
+if (process.env.NODE_ENV === 'production' && !process.env.DB_PATH && !USE_UPSTASH) {
     console.warn(
-        '[database] DB_PATH is not set. On Zeabur the container disk is ephemeral — redeploys reset db.json. Mount a volume and set DB_PATH (see .env.example).'
+        '[database] No DB_PATH and no Upstash — data is lost on redeploy/spin-down. Set UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN (free tier) or mount a volume (see .env.example).'
     );
 }
-console.log('[database] using', path.resolve(DB_PATH));
+
+if (USE_UPSTASH) {
+    process.once('SIGINT', () => {
+        flushUpstashFinal().finally(() => process.exit(0));
+    });
+    process.once('SIGTERM', () => {
+        flushUpstashFinal().finally(() => process.exit(0));
+    });
+}
 
 function getLogs() {
     return readDbSafe();
@@ -792,6 +939,17 @@ function upsertGroupMember(chatId, telegramUser) {
         updatedAt: new Date().toISOString()
     };
     persistDb(data);
+    try {
+        const { scheduleUpsertTelegramUser } = require('./supabaseSync');
+        scheduleUpsertTelegramUser({
+            telegram_user_id: Number(id),
+            username: data.groupMembers[id].username,
+            first_name: data.groupMembers[id].firstName,
+            last_name: data.groupMembers[id].lastName,
+            is_bot: false,
+            source: 'chat_member'
+        });
+    } catch (_) { /* optional */ }
 }
 
 function removeGroupMember(chatId) {
@@ -801,6 +959,10 @@ function removeGroupMember(chatId) {
     if (data.groupMembers[id]) {
         delete data.groupMembers[id];
         persistDb(data);
+        try {
+            const { scheduleDeleteTelegramUser } = require('./supabaseSync');
+            scheduleDeleteTelegramUser(Number(id));
+        } catch (_) { /* optional */ }
     }
 }
 
@@ -823,6 +985,10 @@ function mergeGroupMembersFromExport(userList) {
         added++;
     }
     persistDb(data);
+    try {
+        const { scheduleBulkUpsertFromGroupMembers } = require('./supabaseSync');
+        scheduleBulkUpsertFromGroupMembers(data.groupMembers, 'seed_export');
+    } catch (_) { /* optional */ }
     return { merged: added, totalKeys: Object.keys(data.groupMembers).length };
 }
 
@@ -852,9 +1018,10 @@ function getBroadcastRecipients(mergeGroupMembers) {
     return Array.from(map.values());
 }
 
-module.exports = { 
-    getLogs, 
-    addLog, 
+module.exports = {
+    ready,
+    getLogs,
+    addLog,
     addChatMessage, 
     getChatMessages, 
     getAllChats,
