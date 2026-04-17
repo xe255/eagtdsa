@@ -660,37 +660,43 @@ function getStats() {
 function getAllUsers() {
     const data = getLogs();
     const usersMap = new Map();
-    
-    // First pass: collect lastAction and identify all users
-    data.logs.forEach(log => {
-        if (!log.chatId) return;
-        
-        if (!usersMap.has(log.chatId)) {
-            const accounts = getUserAccounts(log.chatId);
-            usersMap.set(log.chatId, {
-                chatId: log.chatId,
+
+    /** Align keys with groupMembers (numeric Telegram user ids). */
+    function normalizeChatId(raw) {
+        if (raw == null) return null;
+        if (typeof raw === 'string' && /^\d+$/.test(raw)) return Number(raw);
+        return raw;
+    }
+
+    // First pass: collect lastAction and identify all users (from bot logs)
+    data.logs.forEach((log) => {
+        const cid = normalizeChatId(log.chatId);
+        if (cid == null) return;
+
+        if (!usersMap.has(cid)) {
+            const accounts = getUserAccounts(cid);
+            usersMap.set(cid, {
+                chatId: cid,
                 username: 'Unknown',
                 firstName: 'Unknown',
                 lastName: '',
                 telegramUsername: null,
                 lastAction: log.timestamp,
                 accountCount: accounts.length,
-                activeAccounts: accounts.filter(a => a.active).length,
-                isBlacklisted: isBlacklisted(log.chatId),
-                isBroadcastExcluded: isBroadcastExcluded(log.chatId)
+                activeAccounts: accounts.filter((a) => a.active).length,
+                isBlacklisted: isBlacklisted(cid),
+                isBroadcastExcluded: isBroadcastExcluded(cid)
             });
         } else {
-            // Update lastAction if this log is newer
-            const existingTime = new Date(usersMap.get(log.chatId).lastAction).getTime();
+            const existingTime = new Date(usersMap.get(cid).lastAction).getTime();
             const logTime = new Date(log.timestamp).getTime();
             if (logTime > existingTime) {
-                usersMap.get(log.chatId).lastAction = log.timestamp;
+                usersMap.get(cid).lastAction = log.timestamp;
             }
         }
-        
-        // Identity pass for each log (prefer non-ADMIN with userInfo)
+
         if (log.username && log.username !== 'ADMIN') {
-            const user = usersMap.get(log.chatId);
+            const user = usersMap.get(cid);
             if (user.username === 'Unknown' || log.userInfo) {
                 if (log.username !== 'Missing') user.username = log.username;
                 user.firstName = log.userInfo?.first_name || user.username;
@@ -699,16 +705,55 @@ function getAllUsers() {
             }
         }
     });
-    
-    // If we still have 'Unknown' firstNames, try to use username
-    usersMap.forEach(user => {
+
+    usersMap.forEach((user) => {
         if (user.firstName === 'Unknown' && user.username !== 'Unknown') {
             user.firstName = user.username;
         }
     });
-    
-    return Array.from(usersMap.values()).sort((a, b) => 
-        new Date(b.lastAction) - new Date(a.lastAction)
+
+    // Roster from group / Supabase merge: users who never hit the bot still appear in /users
+    const gm = data.groupMembers || {};
+    const rosterOnlyTs = '1970-01-01T00:00:00.000Z';
+    for (const idStr of Object.keys(gm)) {
+        if (!/^\d+$/.test(idStr)) continue;
+        const chatId = Number(idStr);
+        const v = gm[idStr];
+        let user = usersMap.get(chatId);
+        if (user === undefined) {
+            const accounts = getUserAccounts(chatId);
+            usersMap.set(chatId, {
+                chatId,
+                username: v.username != null ? String(v.username) : 'Unknown',
+                firstName:
+                    v.firstName != null
+                        ? String(v.firstName)
+                        : v.username != null
+                          ? String(v.username)
+                          : 'Unknown',
+                lastName: v.lastName != null ? String(v.lastName) : '',
+                telegramUsername: v.username ?? null,
+                lastAction: v.updatedAt || rosterOnlyTs,
+                accountCount: accounts.length,
+                activeAccounts: accounts.filter((a) => a.active).length,
+                isBlacklisted: isBlacklisted(chatId),
+                isBroadcastExcluded: isBroadcastExcluded(chatId)
+            });
+        } else {
+            if (user.firstName === 'Unknown' || user.firstName === '') {
+                if (v.firstName) user.firstName = String(v.firstName);
+                else if (v.username) user.firstName = String(v.username);
+            }
+            if ((!user.lastName || user.lastName === '') && v.lastName) {
+                user.lastName = String(v.lastName);
+            }
+            if (user.username === 'Unknown' && v.username) user.username = String(v.username);
+            if (!user.telegramUsername && v.username) user.telegramUsername = v.username;
+        }
+    }
+
+    return Array.from(usersMap.values()).sort(
+        (a, b) => new Date(b.lastAction) - new Date(a.lastAction)
     );
 }
 
