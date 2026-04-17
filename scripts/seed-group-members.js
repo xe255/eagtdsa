@@ -11,8 +11,10 @@
  *   TELEGRAM_USER_SESSION — optional; if empty, you will log in once and must save the printed session string
  *   REQUIRED_GROUP_ID or TELEGRAM_GROUP_ID — full supergroup id (-100…) from the bot’s /getgroupid
  *   TELEGRAM_SEED_GROUP — optional: @groupusername or t.me/… if id resolution fails
+ *   REQUIRED_GROUP_INVITE or TELEGRAM_GROUP_INVITE — https://t.me/+… link so GramJS can join before scraping
+ *   TELEGRAM_INVITE_HASH — optional; only the +hash part if you prefer not to store the full URL
  *
- * The Telegram USER you log into must already be a member of the group.
+ * If the user account is not in the group yet, set REQUIRED_GROUP_INVITE; the script will ImportChatInvite once.
  *
  * Optional: DB_PATH — merges into db.json groupMembers (unless --stdout-only)
  */
@@ -43,6 +45,46 @@ function toPlainUser(u) {
         firstName: u.firstName || u.first_name || null,
         lastName: u.lastName || u.last_name || null
     };
+}
+
+/** t.me/+HASH or legacy joinchat/HASH, or raw hash from TELEGRAM_INVITE_HASH */
+function extractInviteHashFromEnv() {
+    const direct = (process.env.TELEGRAM_INVITE_HASH || '').trim();
+    if (direct) return direct;
+    const url = (process.env.REQUIRED_GROUP_INVITE || process.env.TELEGRAM_GROUP_INVITE || '').trim();
+    if (!url) return '';
+    const plus = url.match(/(?:https?:\/\/)?t\.me\/\+([A-Za-z0-9_-]+)/i);
+    if (plus) return plus[1];
+    const legacy = url.match(/(?:https?:\/\/)?t\.me\/joinchat\/([A-Za-z0-9_-]+)/i);
+    if (legacy) return legacy[1];
+    return '';
+}
+
+async function ensureJoinedViaInvite(client, hash) {
+    if (!hash) return;
+    const { Api } = require('telegram/tl');
+    const checked = await client.invoke(new Api.messages.CheckChatInvite({ hash }));
+    if (checked instanceof Api.ChatInviteAlready) {
+        console.error('[seed] Invite: already a member of this chat.');
+        return;
+    }
+    if (checked instanceof Api.ChatInvite) {
+        console.error('[seed] Joining group via invite link…');
+        try {
+            await client.invoke(new Api.messages.ImportChatInvite({ hash }));
+        } catch (e) {
+            const msg = [e.errorMessage, e.message].filter(Boolean).join(' ');
+            if (/USER_ALREADY_PARTICIPANT|400: USER_ALREADY/i.test(msg)) {
+                console.error('[seed] Already in chat (USER_ALREADY_PARTICIPANT).');
+                return;
+            }
+            throw e;
+        }
+        console.error('[seed] Joined. Brief pause before listing members…');
+        await new Promise((r) => setTimeout(r, 2000));
+        return;
+    }
+    console.warn('[seed] Unexpected CheckChatInvite result:', checked && checked.className);
 }
 
 async function main() {
@@ -96,6 +138,21 @@ async function main() {
         }
     }
 
+    const inviteHash = extractInviteHashFromEnv();
+    if (inviteHash) {
+        try {
+            await ensureJoinedViaInvite(client, inviteHash);
+        } catch (e) {
+            console.error('[seed] Invite join failed:', e.message || e);
+            console.error('Check that the link is valid and the account may join (not banned).');
+            throw e;
+        }
+    } else {
+        console.error(
+            '[seed] Tip: set REQUIRED_GROUP_INVITE (or TELEGRAM_GROUP_INVITE) to your https://t.me/+… link to auto-join.'
+        );
+    }
+
     console.error('Loading dialogs (helps GramJS resolve supergroups you are in)…');
     await client.getDialogs({ limit: 500 }).catch((err) => {
         console.warn('[seed] getDialogs:', err.message || err);
@@ -114,9 +171,12 @@ async function main() {
             '  2) Use the full id from the bot’s /getgroupid (e.g. -1001234567890), no typos.'
         );
         console.error(
-            '  3) For a public group, set TELEGRAM_SEED_GROUP=@YourGroupUsername in .env and retry.'
+            '  3) Set REQUIRED_GROUP_INVITE=https://t.me/+… so the script can join with your user account.'
         );
-        console.error('  4) Open the group in Telegram once, then run this script again.\n');
+        console.error(
+            '  4) For a public group, set TELEGRAM_SEED_GROUP=@YourGroupUsername in .env and retry.'
+        );
+        console.error('  5) Open the group in Telegram once, then run this script again.\n');
         throw e;
     }
 
