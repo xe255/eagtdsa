@@ -2,6 +2,8 @@
 
 /**
  * Optional free HTTP proxy pool: GitHub list → proxycheck.io reputation → live probe to Emby origin.
+ * Refreshes on a fixed timer only (default hourly) — user traffic does not drive list/probe work.
+ * Per-request: pick best untried proxy (successes + latency), evict on failure, rotate until success or direct fallback.
  * High risk: public proxies may inspect TLS traffic. Enable only with FREE_PROXY_POOL=1 and eyes open.
  */
 
@@ -11,7 +13,7 @@ const LIST_URL =
     process.env.FREE_PROXY_LIST_URL ||
     'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt';
 const PROXYCHECK_KEY = (process.env.PROXYCHECK_API_KEY || '').trim();
-const REFRESH_MS = Math.max(120_000, parseInt(process.env.FREE_PROXY_REFRESH_MS || '300000', 10) || 300_000);
+const REFRESH_MS = Math.max(60_000, parseInt(process.env.FREE_PROXY_REFRESH_MS || '3600000', 10) || 3_600_000);
 const MAX_CAND = Math.min(500, Math.max(30, parseInt(process.env.FREE_PROXY_MAX_CANDIDATES || '200', 10) || 200));
 const CHUNK = Math.min(200, Math.max(20, parseInt(process.env.FREE_PROXY_PROXYCHECK_CHUNK || '80', 10) || 80));
 const MAX_RISK = Math.min(100, Math.max(0, parseInt(process.env.FREE_PROXY_MAX_RISK || '90', 10) || 90));
@@ -20,9 +22,8 @@ const PROBE_MS = Math.max(2000, parseInt(process.env.FREE_PROXY_PROBE_TIMEOUT_MS
 const POOL_MAX = Math.min(80, Math.max(5, parseInt(process.env.FREE_PROXY_POOL_MAX || '35', 10) || 35));
 
 let canonicalOrigin = (process.env.EMBY_API_ORIGIN || 'https://emby.embyiltv.io').replace(/\/$/, '');
-/** @type {{ url: string, latency: number }[]} */
+/** @type {{ url: string, latency: number, successes?: number }[]} */
 let pool = [];
-let rr = 0;
 let loopStarted = false;
 /** @type {Promise<void> | null} */
 let refreshInFlight = null;
@@ -168,7 +169,7 @@ async function probeMany(proxyUrls) {
         const batch = proxyUrls.slice(i, i + PROBE_CONC);
         const results = await Promise.all(batch.map((u) => probeOne(u)));
         for (const r of results) {
-            if (r && r.ok && r.url) winners.push({ url: r.url, latency: r.latency });
+            if (r && r.ok && r.url) winners.push({ url: r.url, latency: r.latency, successes: 0 });
         }
     }
     winners.sort((a, b) => a.latency - b.latency);
@@ -216,8 +217,11 @@ async function refreshPool() {
         probed = afterRep.length;
         const winners = await probeMany(afterRep);
         alive = winners.length;
-        pool = winners;
-        rr = 0;
+        const prevOk = new Map(pool.map((p) => [p.url, p.successes || 0]));
+        pool = winners.map((w) => ({
+            ...w,
+            successes: prevOk.get(w.url) || 0
+        }));
         const ms = Date.now() - t0;
         console.log(
             `[proxy-pool] fetched=${fetched} ipsChecked=${checked} afterRep=${probed} alive=${alive} refreshMs=${ms}`
@@ -228,44 +232,59 @@ async function refreshPool() {
 }
 
 /**
+ * Prefer proxies with more successful Emby round-trips, then lower probe latency.
+ * @param {Set<string>} tried
+ * @returns {{ url: string, latency: number, successes?: number } | null}
+ */
+function pickNextProxy(tried) {
+    const candidates = pool.filter((p) => p && p.url && !tried.has(p.url));
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => {
+        const sa = a.successes || 0;
+        const sb = b.successes || 0;
+        if (sb !== sa) return sb - sa;
+        return (a.latency || 1e9) - (b.latency || 1e9);
+    });
+    return candidates[0];
+}
+
+/**
  * @param {string} url
  * @param {import('undici').RequestInit} init
  */
 async function fetchThroughPool(url, init) {
     if (pool.length === 0) {
-        await scheduleRefresh();
+        scheduleRefresh();
     }
-    const maxTries = Math.min(5, Math.max(2, Math.max(pool.length, 1) + 1));
+    const maxTries = Math.min(12, Math.max(2, pool.length + 3));
     const tried = new Set();
     for (let t = 0; t < maxTries; t++) {
-        if (pool.length === 0) {
-            if (directFallbackWhenEmpty()) {
-                const now = Date.now();
-                if (now - lastDirectFallbackLog > 60_000) {
-                    lastDirectFallbackLog = now;
-                    console.warn(
-                        '[proxy-pool] pool empty after refresh — using direct fetch (disable with FREE_PROXY_FALLBACK_DIRECT=0)'
-                    );
-                }
-                return undiciFetch(url, init);
-            }
-            throw new Error(
-                'free-proxy-pool: no working proxies after refresh (direct fallback disabled — unset FREE_PROXY_FALLBACK_DIRECT or set to 1)'
-            );
-        }
-        const entry = pool[rr % pool.length];
-        rr++;
-        if (!entry || tried.has(entry.url)) continue;
+        if (pool.length === 0) break;
+        const entry = pickNextProxy(tried);
+        if (!entry) break;
         tried.add(entry.url);
         try {
             const dispatcher = new ProxyAgent(entry.url);
             const res = await undiciFetch(url, { ...init, dispatcher });
+            const i = pool.findIndex((p) => p.url === entry.url);
+            if (i >= 0) pool[i].successes = (pool[i].successes || 0) + 1;
             return res;
         } catch {
             pool = pool.filter((p) => p.url !== entry.url);
         }
     }
-    throw new Error('free-proxy-pool: all proxy attempts failed');
+    if (directFallbackWhenEmpty()) {
+        const now = Date.now();
+        if (now - lastDirectFallbackLog > 60_000) {
+            lastDirectFallbackLog = now;
+            const reason = pool.length === 0 ? 'pool empty (hourly refresh in background)' : 'all pooled proxies failed for this request';
+            console.warn(`[proxy-pool] ${reason} — using direct fetch (FREE_PROXY_FALLBACK_DIRECT=0 to disable)`);
+        }
+        return undiciFetch(url, init);
+    }
+    throw new Error(
+        'free-proxy-pool: no usable proxy (wait for scheduled refresh or enable FREE_PROXY_FALLBACK_DIRECT)'
+    );
 }
 
 function getPoolSize() {
@@ -279,7 +298,8 @@ function startFreeProxyPoolLoop() {
     setInterval(() => {
         scheduleRefresh();
     }, REFRESH_MS);
-    console.log(`[proxy-pool] loop every ${REFRESH_MS / 1000}s → ${LIST_URL.split('/').slice(-2).join('/')}`);
+    const iv = REFRESH_MS >= 3600000 ? `${REFRESH_MS / 3600000}h` : `${REFRESH_MS / 1000}s`;
+    console.log(`[proxy-pool] scheduled refresh every ${iv} → ${LIST_URL.split('/').slice(-2).join('/')}`);
 }
 
 module.exports = {
