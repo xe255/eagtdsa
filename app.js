@@ -1394,8 +1394,8 @@ ${remainingAccounts > 0 ? `✅ <b>נותרו:</b> ${remainingAccounts} חשבו�
             });
             try {
                 await bot.deleteMessage(chatId, statusMsg.message_id);
-            } catch (e) {
-                /* progress message may be gone or undeletable — ignore */
+            } catch (delErr) {
+                /* older Telegram clients / rights — ignore */
             }
             
             // Broadcast completion
