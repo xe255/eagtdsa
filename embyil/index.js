@@ -13,6 +13,7 @@ if (process.env.EMBY_API_FETCH_BASE) {
 /**
  * Proxied fetch for Emby API. HTTP proxies use undici; SOCKS5/4 must use socks-proxy-agent (HTTP CONNECT is different).
  * Set socks5://user:pass@host:port in EMBY_HTTPS_PROXY or EMBY_SOCKS_PROXY.
+ * Optional FREE_PROXY_POOL=1 uses GitHub list + proxycheck + live probes (see free-proxy-pool.js).
  */
 function createEmbyFetch() {
     const proxy = (
@@ -21,6 +22,19 @@ function createEmbyFetch() {
         process.env.HTTPS_PROXY ||
         ''
     ).trim();
+
+    const poolOn = /^1|true|yes|on$/i.test(String(process.env.FREE_PROXY_POOL || '').trim());
+    if (!proxy && poolOn) {
+        try {
+            const pool = require('./free-proxy-pool');
+            pool.configure({ canonicalOrigin: EMBY_CANONICAL_ORIGIN });
+            console.log('[embyil] Emby API client: FREE_PROXY_POOL (GitHub + proxycheck + probes)');
+            return (url, init) => pool.fetchThroughPool(url, init);
+        } catch (e) {
+            console.warn('[embyil] free-proxy-pool failed to load:', e.message);
+        }
+    }
+
     if (!proxy) return globalThis.fetch.bind(globalThis);
 
     const isSocks = /^socks5?:\/\//i.test(proxy) || /^socks4a?:\/\//i.test(proxy) || /^socks4:\/\//i.test(proxy);
