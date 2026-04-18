@@ -19,7 +19,8 @@
     "@supabase/supabase-js": "^2.103.3",
     "dotenv": "^17.2.4",
     "express": "^5.2.1",
-    "node-telegram-bot-api": "^0.67.0"
+    "node-telegram-bot-api": "^0.67.0",
+    "undici": "^6.21.3"
   },
   "devDependencies": {
     "telegram": "^2.26.22"

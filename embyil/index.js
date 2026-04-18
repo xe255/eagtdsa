@@ -6,6 +6,20 @@ const { generateNumericString, generateUsername5, generateStrongPassword } = req
 const API_ORIGIN = (process.env.EMBY_API_ORIGIN || 'https://emby.embyiltv.io').replace(/\/$/, '');
 const API_BASE = `${API_ORIGIN}/api`;
 
+/** Use undici + ProxyAgent when set so Emby API traffic exits via another IP (often bypasses CF datacenter blocks). */
+const EMBY_PROXY = (process.env.EMBY_HTTPS_PROXY || process.env.HTTPS_PROXY || '').trim();
+let embyFetch = globalThis.fetch.bind(globalThis);
+if (EMBY_PROXY) {
+    try {
+        const { fetch: undiciFetch, ProxyAgent } = require('undici');
+        const dispatcher = new ProxyAgent(EMBY_PROXY);
+        embyFetch = (url, init) => undiciFetch(url, { ...init, dispatcher });
+        console.log('[embyil] Emby API HTTP client: using proxy (EMBY_HTTPS_PROXY or HTTPS_PROXY)');
+    } catch (e) {
+        console.warn('[embyil] Proxy configured but undici failed:', e.message);
+    }
+}
+
 /** Avoid multi‑MB HTML (e.g. Cloudflare challenge) becoming Error.message and breaking Telegram (4096 cap). */
 function summarizeHttpErrorText(text, status) {
     if (typeof text !== 'string') return String(text || '');
@@ -43,7 +57,7 @@ async function apiJson(method, path, { body, token } = {}) {
     const headers = { ...DEFAULT_HEADERS };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (token) headers.Authorization = `Bearer ${token}`;
-    const res = await fetch(`${API_BASE}${path}`, {
+    const res = await embyFetch(`${API_BASE}${path}`, {
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body)
