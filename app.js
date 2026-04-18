@@ -2500,9 +2500,29 @@ app.get('/r/:id', (req, res) => {
     }
 });
 
-// API Endpoints
+// API Endpoints — lightweight stats for dashboard polling
+app.get('/api/stats', (req, res) => {
+    const data = getLogs();
+    const logs = Array.isArray(data.logs) ? data.logs : [];
+    res.json({
+        stats: data.stats || { totalCreated: 0, activeUsers: 0 },
+        logsTotal: logs.length
+    });
+});
+
+// Logs slice only (avoid sending full db.json over the wire)
 app.get('/api/logs', (req, res) => {
-    res.json(getLogs());
+    const data = getLogs();
+    const stats = data.stats || { totalCreated: 0, activeUsers: 0 };
+    const allLogs = Array.isArray(data.logs) ? data.logs : [];
+    const raw = parseInt(req.query.limit, 10);
+    const limit = Math.min(2000, Math.max(50, Number.isFinite(raw) ? raw : 300));
+    res.json({
+        stats,
+        logs: allLogs.slice(0, limit),
+        logsTotal: allLogs.length,
+        logsReturned: Math.min(limit, allLogs.length)
+    });
 });
 
 app.get('/api/chats', (req, res) => {
