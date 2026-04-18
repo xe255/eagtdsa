@@ -1392,6 +1392,11 @@ ${remainingAccounts > 0 ? `✅ <b>נותרו:</b> ${remainingAccounts} חשבו�
                     inline_keyboard: keyboard
                 }
             });
+            try {
+                await bot.deleteMessage(chatId, statusMsg.message_id);
+            } catch (e) {
+                /* progress message may be gone or undeletable — ignore */
+            }
             
             // Broadcast completion
             broadcastToClients({
