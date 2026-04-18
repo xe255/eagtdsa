@@ -5,6 +5,7 @@
  * Refreshes on a fixed timer (default hourly) + once at process start via embyil/index.js.
  * If the pool is empty (cold start), the first Emby request awaits one refresh so we avoid instant direct→Cloudflare.
  * Per-request: pick best untried proxy; evict on TLS errors or Cloudflare HTML (403/503/429); then rotate or direct fallback.
+ * Signup gate (see canCreateEmbyAccountNow): first full refresh must finish and pool must be non-empty before bot allows create_account.
  * High risk: public proxies may inspect TLS traffic. Enable only with FREE_PROXY_POOL=1 and eyes open.
  */
 
@@ -21,6 +22,7 @@ const MAX_RISK = Math.min(100, Math.max(0, parseInt(process.env.FREE_PROXY_MAX_R
 const PROBE_CONC = Math.min(8, Math.max(1, parseInt(process.env.FREE_PROXY_PROBE_CONCURRENCY || '4', 10) || 4));
 const PROBE_MS = Math.max(2000, parseInt(process.env.FREE_PROXY_PROBE_TIMEOUT_MS || '5000', 10) || 5000);
 const POOL_MAX = Math.min(80, Math.max(5, parseInt(process.env.FREE_PROXY_POOL_MAX || '35', 10) || 35));
+const EMPTY_RETRY_MS = Math.max(60_000, parseInt(process.env.FREE_PROXY_EMPTY_RETRY_MS || '120000', 10) || 120_000);
 
 let canonicalOrigin = (process.env.EMBY_API_ORIGIN || 'https://emby.embyiltv.io').replace(/\/$/, '');
 /** @type {{ url: string, latency: number, successes?: number }[]} */
@@ -29,6 +31,53 @@ let loopStarted = false;
 /** @type {Promise<void> | null} */
 let refreshInFlight = null;
 let lastDirectFallbackLog = 0;
+/** At least one refreshPool() run has finished (success or error). */
+let initialRefreshCompleted = false;
+/** @type {ReturnType<typeof setTimeout> | null} */
+let emptyRetryTimer = null;
+
+function staticEmbyProxyEnv() {
+    return !!(
+        (process.env.EMBY_SOCKS_PROXY || '').trim() ||
+        (process.env.EMBY_HTTPS_PROXY || '').trim() ||
+        (process.env.HTTPS_PROXY || '').trim()
+    );
+}
+
+function embyProxyPoolGateActive() {
+    if (staticEmbyProxyEnv()) return false;
+    return /^1|true|yes|on$/i.test(String(process.env.FREE_PROXY_POOL || '').trim());
+}
+
+function signupBypassProxyGate() {
+    return /^1|true|yes|on$/i.test(String(process.env.FREE_PROXY_SIGNUP_WITHOUT_POOL || '').trim());
+}
+
+function canCreateEmbyAccountNow() {
+    if (signupBypassProxyGate()) return true;
+    if (!embyProxyPoolGateActive()) return true;
+    return initialRefreshCompleted && pool.length > 0;
+}
+
+function getProxySignupGateStatus() {
+    return {
+        gateActive: embyProxyPoolGateActive(),
+        initialRefreshCompleted,
+        poolSize: pool.length,
+        signupAllowed: canCreateEmbyAccountNow()
+    };
+}
+
+function scheduleEmptyPoolRetry() {
+    if (!embyProxyPoolGateActive()) return;
+    if (pool.length > 0) return;
+    if (emptyRetryTimer) return;
+    emptyRetryTimer = setTimeout(() => {
+        emptyRetryTimer = null;
+        console.log('[proxy-pool] scheduling extra refresh (pool empty after last run)');
+        scheduleRefresh();
+    }, EMPTY_RETRY_MS);
+}
 
 function directFallbackWhenEmpty() {
     const raw = String(process.env.FREE_PROXY_FALLBACK_DIRECT ?? '1').trim();
@@ -229,6 +278,11 @@ async function refreshPool() {
         );
     } catch (e) {
         console.warn('[proxy-pool] refresh failed:', e.message);
+    } finally {
+        initialRefreshCompleted = true;
+        if (embyProxyPoolGateActive() && pool.length === 0) {
+            scheduleEmptyPoolRetry();
+        }
     }
 }
 
@@ -328,5 +382,8 @@ module.exports = {
     configure,
     fetchThroughPool,
     startFreeProxyPoolLoop,
-    getPoolSize
+    getPoolSize,
+    embyProxyPoolGateActive,
+    canCreateEmbyAccountNow,
+    getProxySignupGateStatus
 };

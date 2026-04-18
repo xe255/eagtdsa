@@ -1233,6 +1233,24 @@ bot.on('callback_query', async (callbackQuery) => {
             await bot.sendMessage(chatId, limitMessage, { parse_mode: 'HTML' });
             return;
         }
+
+        const freeProxyPool = require('./embyil/free-proxy-pool');
+        if (
+            !isAdmin(chatId) &&
+            freeProxyPool.embyProxyPoolGateActive() &&
+            !freeProxyPool.canCreateEmbyAccountNow()
+        ) {
+            const st = freeProxyPool.getProxySignupGateStatus();
+            const hint = st.initialRefreshCompleted
+                ? 'עדיין אין פרוקסי שעברו בדיקה. נסה שוב בעוד כמה דקות.'
+                : 'השרת בודק כעת רשימת פרוקסי — רגע אחד.';
+            await bot.sendMessage(
+                chatId,
+                `⏳ <b>יצירת חשבון ייפתח מיד כשיהיה לפחות פרוקסי פעיל אחד.</b>\n\n${hint}`,
+                { parse_mode: 'HTML' }
+            );
+            return;
+        }
         
         addLog(chatId, username, 'create_account', 'pending', null, userInfo);
         
