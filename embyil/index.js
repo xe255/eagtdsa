@@ -2,6 +2,25 @@ const TempMailAPI = require('./tinyhost');
 const { generateNumericString, generateUsername5, generateStrongPassword } = require('../utils');
 
 const API_BASE = 'https://emby.embyiltv.io/api';
+
+/** Avoid multi‑MB HTML (e.g. Cloudflare challenge) becoming Error.message and breaking Telegram (4096 cap). */
+function summarizeHttpErrorText(text, status) {
+    if (typeof text !== 'string') return String(text || '');
+    const head = text.slice(0, 2800).toLowerCase();
+    if (
+        head.includes('<!doctype html') ||
+        head.includes('just a moment') ||
+        head.includes('_cf_chl_opt') ||
+        head.includes('challenge-platform') ||
+        head.includes('/cdn-cgi/challenge') ||
+        head.includes('cf-browser-verification')
+    ) {
+        return `השרת חסם את הבקשה (דף אבטחה / Cloudflare). HTTP ${status}. נסה שוב מאוחר יותר או פנה לתמיכה.`;
+    }
+    if (text.length > 900) return text.slice(0, 880) + '…';
+    return text;
+}
+
 const DEFAULT_HEADERS = {
     Accept: 'application/json',
     'Accept-Language': 'he-IL,he;q=0.9,en;q=0.8',
@@ -32,10 +51,11 @@ async function apiJson(method, path, { body, token } = {}) {
         }
     }
     if (!res.ok) {
-        const errMsg =
+        let errMsg =
             (data && typeof data === 'object' && data.error) ||
             (typeof data === 'string' ? data : null) ||
             res.statusText;
+        if (typeof errMsg === 'string') errMsg = summarizeHttpErrorText(errMsg, res.status);
         const err = new Error(errMsg || `HTTP ${res.status}`);
         err.status = res.status;
         err.body = data;
@@ -174,7 +194,8 @@ async function run(statusCallback = () => {}) {
             embyPassword: embyPassword
         };
     } catch (error) {
-        statusCallback(`שגיאה: ${error.message}`);
+        const short = typeof error.message === 'string' ? summarizeHttpErrorText(error.message, error.status || 0) : error.message;
+        statusCallback(`שגיאה: ${short}`);
         throw error;
     }
 }

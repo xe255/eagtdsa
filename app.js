@@ -59,11 +59,20 @@ const {
 // --- Configuration ---
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const port = process.env.PORT || 3000;
-const PUBLIC_URL = process.env.PUBLIC_URL || '';
-const KEEP_ALIVE_SELF_PING = /^1|true|yes|on$/i.test(String(process.env.KEEP_ALIVE_SELF_PING || '').trim());
+// Render sets RENDER_EXTERNAL_URL; use as fallback so keep-alive + /r/ links work without extra env.
+const PUBLIC_URL = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').trim();
+/** When unset: on if PUBLIC_URL is set (Render/Zeabur need inbound hits before ~15m idle). Explicit false disables. */
+function envBool(name, defaultTrue) {
+    const v = process.env[name];
+    if (v === undefined || String(v).trim() === '') return defaultTrue;
+    if (/^0|false|no|off$/i.test(String(v).trim())) return false;
+    if (/^1|true|yes|on$/i.test(String(v).trim())) return true;
+    return defaultTrue;
+}
+const KEEP_ALIVE_SELF_PING = envBool('KEEP_ALIVE_SELF_PING', !!PUBLIC_URL);
 const KEEP_ALIVE_INTERVAL_MS = Math.max(
     60_000,
-    parseInt(process.env.KEEP_ALIVE_INTERVAL_MS || '600000', 10) || 600_000
+    parseInt(process.env.KEEP_ALIVE_INTERVAL_MS || '300000', 10) || 300_000
 );
 
 // Validate required environment variables
@@ -182,6 +191,13 @@ function escapeHTML(str) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
+}
+
+/** Telegram hard limit 4096; keep headroom for wrappers and HTML expansion after escape. */
+function clipForTelegram(str, maxLen = 3500) {
+    const s = str == null ? '' : String(str);
+    if (s.length <= maxLen) return s;
+    return s.slice(0, Math.max(0, maxLen - 1)) + '…';
 }
 
 // Helper to broadcast to all WebSocket clients
@@ -1211,7 +1227,10 @@ bot.on('callback_query', async (callbackQuery) => {
                 
                 // Create visual progress bar
                 const progressBar = createProgressBar(progress);
-                const statusText = `${cleanText}\n\n${progressBar} ${progress}%`;
+                let statusText = `${cleanText}\n\n${progressBar} ${progress}%`;
+                if (statusText.length > 3900) {
+                    statusText = clipForTelegram(statusText, 3900);
+                }
                 
                 // Update database progress
                 updateProgress(chatId, progress, text);
@@ -1252,14 +1271,21 @@ bot.on('callback_query', async (callbackQuery) => {
             }
         }
         if (lastError && !result) {
-            addLog(chatId, username, 'create_account', 'failed', lastError.message, userInfo);
+            const failDetail = clipForTelegram(lastError.message, 2000);
+            addLog(chatId, username, 'create_account', 'failed', failDetail, userInfo);
             clearProgress(chatId);
-            await bot.sendMessage(chatId, `❌ <b>ההרשמה נכשלה:</b> ${escapeHTML(lastError.message)}`, { parse_mode: 'HTML' });
+            const userLine = escapeHTML(clipForTelegram(lastError.message, 3500));
+            try {
+                await bot.sendMessage(chatId, `❌ <b>ההרשמה נכשלה:</b> ${userLine}`, { parse_mode: 'HTML' });
+            } catch (sendErr) {
+                console.error('sendMessage (registration failed):', sendErr.message || sendErr);
+                await bot.sendMessage(chatId, '❌ <b>ההרשמה נכשלה.</b> פרטי השגיאה ארוכים מדי או השליחה נכשלה — נסה שוב.', { parse_mode: 'HTML' });
+            }
             broadcastToClients({
                 type: 'account_failed',
                 chatId: chatId,
                 username: username,
-                error: lastError.message
+                error: failDetail
             });
         } else if (result) {
             addLog(chatId, username, 'create_account', 'success', result, userInfo);
@@ -2571,10 +2597,17 @@ app.post('/api/toggle-broadcast-exclusion', (req, res) => {
 });
 
 function startKeepAliveSelfPing() {
-    if (!KEEP_ALIVE_SELF_PING) return;
+    if (!KEEP_ALIVE_SELF_PING) {
+        if (!PUBLIC_URL) {
+            console.log('Keep-alive: off (set PUBLIC_URL to your public https origin to auto-enable self-ping)');
+        } else {
+            console.log('Keep-alive: off (KEEP_ALIVE_SELF_PING=false)');
+        }
+        return;
+    }
     const base = PUBLIC_URL.replace(/\/$/, '');
     if (!base) {
-        console.warn('KEEP_ALIVE_SELF_PING is enabled but PUBLIC_URL is empty; self-ping disabled');
+        console.warn('KEEP_ALIVE_SELF_PING wanted but PUBLIC_URL is empty; add PUBLIC_URL=https://your-host');
         return;
     }
     const url = `${base}/health`;
@@ -2587,7 +2620,9 @@ function startKeepAliveSelfPing() {
     };
     ping();
     setInterval(ping, KEEP_ALIVE_INTERVAL_MS);
-    console.log(`Keep-alive: self-ping every ${KEEP_ALIVE_INTERVAL_MS / 1000}s → ${url}`);
+    console.log(
+        `Keep-alive: GET ${url} every ${KEEP_ALIVE_INTERVAL_MS / 1000}s (stays under typical 15m free-tier idle limit)`
+    );
 }
 
 server.listen(port, () => {
