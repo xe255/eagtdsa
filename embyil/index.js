@@ -12,7 +12,8 @@ if (process.env.EMBY_API_FETCH_BASE) {
 
 /**
  * Proxied fetch for Emby API. HTTP proxies use undici; SOCKS5/4 must use socks-proxy-agent (HTTP CONNECT is different).
- * Optional EMBY_PROXY_LIST_FILE (Webshare-style host:port:user:pass lines) bypasses the free pool gate like a static proxy.
+ * Optional EMBY_PROXY_LIST_INLINE / EMBY_PROXY_LIST_FILE (Webshare-style host:port:user:pass lines)
+ * bypasses the free pool gate like a static proxy.
  */
 function createEmbyFetch() {
     const proxy = (
@@ -22,18 +23,18 @@ function createEmbyFetch() {
         ''
     ).trim();
 
-    const trustedFile = (process.env.EMBY_PROXY_LIST_FILE || '').trim();
-    if (!proxy && trustedFile) {
+    const trustedList = (process.env.EMBY_PROXY_LIST_INLINE || process.env.EMBY_PROXY_LIST || process.env.EMBY_PROXY_LIST_FILE || '').trim();
+    if (!proxy && trustedList) {
         try {
             const trusted = require('./trusted-proxy-list');
             const count = trusted.loadFromDisk();
             const mt = (process.env.EMBY_PROXY_LIST_MAX_TRIES || '5').trim();
             console.log(
-                `[embyil] Emby API client: trusted proxy file (${count} endpoints, max ${mt} tries/request — low bandwidth vs FREE_PROXY_POOL)`
+                `[embyil] Emby API client: trusted proxy list (${count} endpoints, max ${mt} tries/request — low bandwidth vs FREE_PROXY_POOL)`
             );
             return (reqUrl, init) => trusted.fetchThrough(reqUrl, init);
         } catch (e) {
-            console.warn('[embyil] trusted proxy file failed:', e.message);
+            console.warn('[embyil] trusted proxy list failed:', e.message);
         }
     }
 

@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Small rotating pool from a local file (e.g. Webshare datacenter list).
+ * Small rotating pool from env or local file (e.g. Webshare datacenter list).
  * Format per line: host:port:username:password (HTTP proxy → http://user:pass@host:port)
  * No external list fetch / origin probes — saves bandwidth vs FREE_PROXY_POOL.
  * Sticky “prefer last good proxy” with short failover ring per request.
@@ -12,6 +12,7 @@ const path = require('path');
 const { fetch: undiciFetch, ProxyAgent } = require('undici');
 
 const FILE = (process.env.EMBY_PROXY_LIST_FILE || '').trim();
+const INLINE = (process.env.EMBY_PROXY_LIST_INLINE || process.env.EMBY_PROXY_LIST || '').trim();
 const MAX_TRIES = Math.min(20, Math.max(1, parseInt(process.env.EMBY_PROXY_LIST_MAX_TRIES || '5', 10) || 5));
 
 /** @type {string[]} */
@@ -40,12 +41,9 @@ function parseLine(line) {
     return `http://${u}:${p}@${host}:${port}`;
 }
 
-function loadFromDisk() {
-    if (!FILE || loaded) return pool.length;
-    const abs = path.isAbsolute(FILE) ? FILE : path.join(process.cwd(), FILE);
-    const txt = fs.readFileSync(abs, 'utf8');
+function loadFromText(txt) {
     const next = [];
-    for (const line of txt.split(/\r?\n/)) {
+    for (const line of String(txt).split(/[\r\n,;]+/)) {
         const url = parseLine(line);
         if (url) next.push(url);
     }
@@ -55,8 +53,17 @@ function loadFromDisk() {
     return pool.length;
 }
 
+function loadFromDisk() {
+    if (loaded) return pool.length;
+    if (INLINE) return loadFromText(INLINE);
+    if (!FILE) return pool.length;
+    const abs = path.isAbsolute(FILE) ? FILE : path.join(process.cwd(), FILE);
+    const txt = fs.readFileSync(abs, 'utf8');
+    return loadFromText(txt);
+}
+
 function poolSize() {
-    if (!loaded && FILE) loadFromDisk();
+    if (!loaded && (INLINE || FILE)) loadFromDisk();
     return pool.length;
 }
 
@@ -88,7 +95,7 @@ function responseLooksCfBlocked(res, bodyText) {
 async function fetchThrough(url, init) {
     const n = poolSize();
     if (n < 1) {
-        throw new Error('trusted-proxy-list: file empty or EMBY_PROXY_LIST_FILE not set');
+        throw new Error('trusted-proxy-list: proxy list empty or EMBY_PROXY_LIST_INLINE / EMBY_PROXY_LIST_FILE not set');
     }
     const cap = Math.min(MAX_TRIES, n);
     let idx = preferIndex % n;
