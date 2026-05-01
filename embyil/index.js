@@ -36,7 +36,12 @@ function createEmbyFetch() {
         }
     }
 
-    if (!proxy) return globalThis.fetch.bind(globalThis);
+    if (!proxy) {
+        console.warn(
+            '[embyil] Emby API client: direct fetch (set FREE_PROXY_POOL=1 or EMBY_HTTPS_PROXY if Cloudflare blocks this host)'
+        );
+        return globalThis.fetch.bind(globalThis);
+    }
 
     const isSocks = /^socks5?:\/\//i.test(proxy) || /^socks4a?:\/\//i.test(proxy) || /^socks4:\/\//i.test(proxy);
     if (isSocks) {
@@ -55,6 +60,7 @@ function createEmbyFetch() {
                 });
         } catch (e) {
             console.warn('[embyil] SOCKS proxy failed to init:', e.message);
+            console.warn('[embyil] falling back to direct fetch (may be blocked by Cloudflare)');
             return globalThis.fetch.bind(globalThis);
         }
     }
@@ -66,6 +72,7 @@ function createEmbyFetch() {
         return (url, init) => undiciFetch(url, { ...init, dispatcher });
     } catch (e) {
         console.warn('[embyil] HTTP proxy (undici) failed:', e.message);
+        console.warn('[embyil] falling back to direct fetch (may be blocked by Cloudflare)');
         return globalThis.fetch.bind(globalThis);
     }
 }
