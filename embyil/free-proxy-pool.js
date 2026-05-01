@@ -4,7 +4,8 @@
  * Optional free HTTP proxy pool: GitHub list → proxycheck.io reputation → live probe to Emby origin.
  * Refreshes on a fixed timer (default hourly) + once at process start via embyil/index.js.
  * If the pool is empty (cold start), the first Emby request awaits one refresh so we avoid instant direct→Cloudflare.
- * Per-request: pick best untried proxy; evict on TLS errors or Cloudflare HTML (403/503/429); then rotate or direct fallback.
+ * Per-request: rotate proxies; evict on TLS errors or Cloudflare block pages (403/503/429 + headers/body).
+ * Direct origin fetch is opt-in (FREE_PROXY_FALLBACK_DIRECT=1); default off when this pool is on so traffic stays on proxies.
  * Signup gate (see canCreateEmbyAccountNow): wait for the first full refresh, then keep serving
  * while the pool rotates/refreshes in the background.
  * High risk: public proxies may inspect TLS traffic. Enable only with FREE_PROXY_POOL=1 and eyes open.
@@ -85,7 +86,11 @@ function scheduleEmptyPoolRetry() {
 }
 
 function directFallbackWhenEmpty() {
-    const raw = String(process.env.FREE_PROXY_FALLBACK_DIRECT ?? '1').trim();
+    const raw = String(process.env.FREE_PROXY_FALLBACK_DIRECT ?? '').trim();
+    if (raw === '') {
+        // Pool mode + direct egress usually hits Cloudflare from the host IP — default off.
+        return !embyProxyPoolGateActive();
+    }
     return !/^0|false|no|off$/i.test(raw);
 }
 
@@ -311,7 +316,7 @@ async function refreshPool() {
  * @returns {{ url: string, latency: number, successes?: number } | null}
  */
 function looksLikeCloudflareChallenge(text) {
-    if (typeof text !== 'string' || text.length < 120) return false;
+    if (typeof text !== 'string' || text.length < 80) return false;
     const h = text.slice(0, 12000).toLowerCase();
     return (
         h.includes('just a moment') ||
@@ -320,8 +325,30 @@ function looksLikeCloudflareChallenge(text) {
         h.includes('/cdn-cgi/challenge') ||
         h.includes('cf-browser-verification') ||
         h.includes('cf-chl-bypass') ||
-        (h.includes('<!doctype html') && h.includes('cloudflare'))
+        (h.includes('<!doctype html') && h.includes('cloudflare')) ||
+        (h.includes('cloudflare') && h.includes('error code'))
     );
+}
+
+/**
+ * True when the response looks like a Cloudflare edge block/challenge (not a JSON API error).
+ * @param {import('undici').Response} res
+ * @param {string} bodyText
+ */
+function responseLooksCfBlocked(res, bodyText) {
+    if (looksLikeCloudflareChallenge(bodyText)) return true;
+    const ct = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
+    if (/application\/json/i.test(ct)) return false;
+    try {
+        if (res.headers.get('cf-ray')) return true;
+        if (/cloudflare/i.test(res.headers.get('server') || '')) return true;
+    } catch {
+        /* ignore */
+    }
+    if (/text\/html/i.test(ct) && typeof bodyText === 'string' && /cloudflare/i.test(bodyText.toLowerCase())) {
+        return true;
+    }
+    return false;
 }
 
 function pickNextProxy(tried) {
@@ -358,7 +385,7 @@ async function fetchThroughPool(url, init) {
             const res = await undiciFetch(url, { ...init, dispatcher });
             if (res.status === 403 || res.status === 503 || res.status === 429) {
                 const snippet = await res.clone().text();
-                if (looksLikeCloudflareChallenge(snippet)) {
+                if (responseLooksCfBlocked(res, snippet)) {
                     pool = pool.filter((p) => p.url !== entry.url);
                     nextPickCursor = nextPickCursor % Math.max(pool.length, 1);
                     continue;
@@ -380,12 +407,14 @@ async function fetchThroughPool(url, init) {
         if (now - lastDirectFallbackLog > 60_000) {
             lastDirectFallbackLog = now;
             const reason = pool.length === 0 ? 'pool empty (refresh/retry in background)' : 'all pooled proxies failed for this request';
-            console.warn(`[proxy-pool] ${reason} — using direct fetch (FREE_PROXY_FALLBACK_DIRECT=0 to disable)`);
+            console.warn(
+                `[proxy-pool] ${reason} — using direct fetch (FREE_PROXY_FALLBACK_DIRECT=1; without it, pool mode avoids server-IP requests)`
+            );
         }
         return undiciFetch(url, init);
     }
     throw new Error(
-        'free-proxy-pool: no usable proxy (wait for scheduled refresh or enable FREE_PROXY_FALLBACK_DIRECT)'
+        'free-proxy-pool: no usable proxy — wait for refresh or set FREE_PROXY_FALLBACK_DIRECT=1 to allow direct (often blocked by Cloudflare)'
     );
 }
 

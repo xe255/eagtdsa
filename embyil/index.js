@@ -107,6 +107,11 @@ const DEFAULT_HEADERS = {
 
 function clarifyFetchError(err) {
     const msg = err && err.message ? String(err.message) : '';
+    if (/free-proxy-pool:/i.test(msg)) {
+        return new Error(
+            'כל פרוקסי ה־HTTP במאגר נכשלו או שהמאגר ריק. המערכת לא ניסתה ישירות מהשרת (כדי להימנע מחסימת Cloudflare). המתן לריענון הרשימה או הגדר פרוקסי קבוע (EMBY_HTTPS_PROXY / relay).'
+        );
+    }
     if (/NotAllowed/i.test(msg)) {
         return new Error(
             'הפרוקסי (SOCKS) דחה את החיבור — NotAllowed. אצל ספק ה-proxy: הרשאת יעד לדומיין emby.embyiltv.io (פורט 443), או רשימת IP מקור מורשים (ייתכן ש-Render חסום). נסה HTTP-proxy אחר או relay ביתי.'
