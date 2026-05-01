@@ -2,7 +2,8 @@
 
 /**
  * Optional free HTTP proxy pool: public list(s) → proxycheck.io reputation → live probes to Emby origin ( / and /api ).
- * Default: merges HTTP + HTTPS proxy lists from proxifly; override with FREE_PROXY_LIST_URL (comma = multiple sources).
+ * Default: merges HTTP + HTTPS proxy lists from proxifly; if that yields no candidates, fetches TheSpeedX
+ * http.txt (host:port lines). Override with FREE_PROXY_LIST_URL / FREE_PROXY_FALLBACK_LIST_URL.
  * Refreshes on a fixed timer (default hourly) + once at process start via embyil/index.js.
  * If the pool is empty (cold start), the first Emby request awaits one refresh so we avoid instant direct→Cloudflare.
  * Per-request: rotate proxies; evict on TLS errors or Cloudflare block pages (403/503/429 + headers/body).
@@ -15,15 +16,27 @@
 
 const { fetch: undiciFetch, ProxyAgent } = require('undici');
 
-const DEFAULT_LIST_URLS = [
+const DEFAULT_PRIMARY_LIST_URLS = [
     'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt',
     'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/https/data.txt'
 ];
 
+/** Fetched only when primary list(s) produce zero parsed proxy lines (or primary fetches fail). */
+const DEFAULT_FALLBACK_LIST_URL =
+    'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/refs/heads/master/http.txt';
+
 function listUrlsFromEnv() {
     const raw = (process.env.FREE_PROXY_LIST_URL || '').trim();
-    if (!raw) return DEFAULT_LIST_URLS.slice();
+    if (!raw) return DEFAULT_PRIMARY_LIST_URLS.slice();
     return raw.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/** @returns {string | null} URL to fetch, or null to skip secondary list */
+function fallbackProxyListUrl() {
+    const raw = String(process.env.FREE_PROXY_FALLBACK_LIST_URL ?? '').trim();
+    if (/^0|false|no|off$/i.test(raw)) return null;
+    if (raw) return raw;
+    return DEFAULT_FALLBACK_LIST_URL;
 }
 
 const PROXYCHECK_KEY = (process.env.PROXYCHECK_API_KEY || '').trim();
@@ -132,13 +145,19 @@ function addProxyLinesToSet(text, set) {
     for (const line of String(text).split(/\r?\n/)) {
         const t = line.trim();
         if (!t || t.startsWith('#')) continue;
-        if (!/^https?:\/\//i.test(t)) continue;
-        try {
-            const u = new URL(t);
-            if (!u.hostname) continue;
-            set.add(`${u.protocol}//${u.hostname}${u.port ? ':' + u.port : ''}`);
-        } catch {
-            /* skip */
+        if (/^https?:\/\//i.test(t)) {
+            try {
+                const u = new URL(t);
+                if (!u.hostname) continue;
+                set.add(`${u.protocol}//${u.hostname}${u.port ? ':' + u.port : ''}`);
+            } catch {
+                /* skip */
+            }
+            continue;
+        }
+        const plain = t.match(/^([a-z0-9][a-z0-9.-]*|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/i);
+        if (plain) {
+            set.add(`http://${plain[1]}:${plain[2]}`);
         }
     }
 }
@@ -275,6 +294,24 @@ async function refreshPool() {
                 console.warn('[proxy-pool] list fetch failed:', e.message, listUrl.split('/').slice(-3).join('/'));
             }
         }
+
+        const fbUrl = fallbackProxyListUrl();
+        if (merged.size === 0 && fbUrl) {
+            console.warn('[proxy-pool] primary lists yielded no candidates; trying fallback list');
+            try {
+                const listRes = await fetch(fbUrl, { signal: AbortSignal.timeout(30000) });
+                const text = await listRes.text();
+                if (!listRes.ok) {
+                    console.warn('[proxy-pool] fallback list HTTP', listRes.status);
+                } else {
+                    anyListOk = true;
+                    addProxyLinesToSet(text, merged);
+                }
+            } catch (e) {
+                console.warn('[proxy-pool] fallback list fetch failed:', e.message);
+            }
+        }
+
         if (!anyListOk && merged.size === 0) {
             console.warn('[proxy-pool] no proxy list sources responded');
             return;
@@ -474,8 +511,9 @@ function startFreeProxyPoolLoop() {
         scheduleRefresh();
     }, REFRESH_MS);
     const iv = REFRESH_MS >= 3600000 ? `${REFRESH_MS / 3600000}h` : `${REFRESH_MS / 1000}s`;
-    const n = listUrlsFromEnv().length;
-    console.log(`[proxy-pool] scheduled refresh every ${iv} (${n} list source(s))`);
+    const nPri = listUrlsFromEnv().length;
+    const fb = fallbackProxyListUrl();
+    console.log(`[proxy-pool] scheduled refresh every ${iv} (${nPri} primary list(s)${fb ? ' + fallback' : ''})`);
 }
 
 module.exports = {
