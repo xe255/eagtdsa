@@ -109,7 +109,7 @@ function clarifyFetchError(err) {
     const msg = err && err.message ? String(err.message) : '';
     if (/free-proxy-pool:/i.test(msg)) {
         return new Error(
-            'כל פרוקסי ה־HTTP במאגר נכשלו או שהמאגר ריק. המערכת לא ניסתה ישירות מהשרת (כדי להימנע מחסימת Cloudflare). המתן לריענון הרשימה או הגדר פרוקסי קבוע (EMBY_HTTPS_PROXY / relay).'
+            'כל פרוקסי ה־HTTP במאגר נכשלו או שהמאגר ריק. רשימות פרוקסי ציבוריות בדרך כלל לא מספיקות לאתרים מאובטחים. מומלץ: relay ביתי + EMBY_API_FETCH_BASE (ראה scripts/emby-api-relay.js), או EMBY_HTTPS_PROXY/ SOCKS בתשלום. אפשר גם להרחיב FREE_PROXY_LIST_URL (כמה כתובות מופרדות בפסיק) ולנסות שוב בעוד מספר דקות.'
         );
     }
     if (/NotAllowed/i.test(msg)) {

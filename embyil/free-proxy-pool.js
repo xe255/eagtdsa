@@ -1,7 +1,8 @@
 'use strict';
 
 /**
- * Optional free HTTP proxy pool: GitHub list → proxycheck.io reputation → live probe to Emby origin.
+ * Optional free HTTP proxy pool: public list(s) → proxycheck.io reputation → live probes to Emby origin ( / and /api ).
+ * Default: merges HTTP + HTTPS proxy lists from proxifly; override with FREE_PROXY_LIST_URL (comma = multiple sources).
  * Refreshes on a fixed timer (default hourly) + once at process start via embyil/index.js.
  * If the pool is empty (cold start), the first Emby request awaits one refresh so we avoid instant direct→Cloudflare.
  * Per-request: rotate proxies; evict on TLS errors or Cloudflare block pages (403/503/429 + headers/body).
@@ -14,9 +15,17 @@
 
 const { fetch: undiciFetch, ProxyAgent } = require('undici');
 
-const LIST_URL =
-    process.env.FREE_PROXY_LIST_URL ||
-    'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt';
+const DEFAULT_LIST_URLS = [
+    'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt',
+    'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/https/data.txt'
+];
+
+function listUrlsFromEnv() {
+    const raw = (process.env.FREE_PROXY_LIST_URL || '').trim();
+    if (!raw) return DEFAULT_LIST_URLS.slice();
+    return raw.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
 const PROXYCHECK_KEY = (process.env.PROXYCHECK_API_KEY || '').trim();
 const REFRESH_MS = Math.max(60_000, parseInt(process.env.FREE_PROXY_REFRESH_MS || '3600000', 10) || 3_600_000);
 const MAX_CAND = Math.min(500, Math.max(30, parseInt(process.env.FREE_PROXY_MAX_CANDIDATES || '200', 10) || 200));
@@ -119,8 +128,7 @@ function shuffle(arr) {
     return a;
 }
 
-function parseProxyList(text) {
-    const set = new Set();
+function addProxyLinesToSet(text, set) {
     for (const line of String(text).split(/\r?\n/)) {
         const t = line.trim();
         if (!t || t.startsWith('#')) continue;
@@ -133,7 +141,6 @@ function parseProxyList(text) {
             /* skip */
         }
     }
-    return shuffle([...set]).slice(0, MAX_CAND);
 }
 
 function extractRisk(entry) {
@@ -196,8 +203,7 @@ async function proxycheckFilterIps(hosts) {
     return allowed;
 }
 
-async function probeOne(proxyUrl) {
-    const probeUrl = `${canonicalOrigin}/`;
+async function probeEndpoint(proxyUrl, probeUrl) {
     const dispatcher = new ProxyAgent(proxyUrl);
     const t0 = Date.now();
     const ac = new AbortController();
@@ -222,6 +228,16 @@ async function probeOne(proxyUrl) {
     }
 }
 
+/** Hit both site root and /api — some proxies only pass one path to the origin. */
+async function probeOne(proxyUrl) {
+    const paths = [`${canonicalOrigin}/`, `${canonicalOrigin}/api`];
+    const results = await Promise.all(paths.map((p) => probeEndpoint(proxyUrl, p)));
+    const ok = results.filter((r) => r.ok);
+    if (ok.length === 0) return { ok: false };
+    ok.sort((a, b) => a.latency - b.latency);
+    return { ok: true, latency: ok[0].latency, url: proxyUrl };
+}
+
 async function probeMany(proxyUrls) {
     const winners = [];
     for (let i = 0; i < proxyUrls.length && winners.length < POOL_MAX; i += PROBE_CONC) {
@@ -242,13 +258,31 @@ async function refreshPool() {
     let probed = 0;
     let alive = 0;
     try {
-        const listRes = await fetch(LIST_URL, { signal: AbortSignal.timeout(30000) });
-        const text = await listRes.text();
-        if (!listRes.ok) throw new Error(`list HTTP ${listRes.status}`);
-        const urls = parseProxyList(text);
+        const merged = new Set();
+        const sources = listUrlsFromEnv();
+        let anyListOk = false;
+        for (const listUrl of sources) {
+            try {
+                const listRes = await fetch(listUrl, { signal: AbortSignal.timeout(30000) });
+                const text = await listRes.text();
+                if (!listRes.ok) {
+                    console.warn('[proxy-pool] list HTTP', listRes.status, listUrl.split('/').slice(-3).join('/'));
+                    continue;
+                }
+                anyListOk = true;
+                addProxyLinesToSet(text, merged);
+            } catch (e) {
+                console.warn('[proxy-pool] list fetch failed:', e.message, listUrl.split('/').slice(-3).join('/'));
+            }
+        }
+        if (!anyListOk && merged.size === 0) {
+            console.warn('[proxy-pool] no proxy list sources responded');
+            return;
+        }
+        const urls = shuffle([...merged]).slice(0, MAX_CAND);
         fetched = urls.length;
         if (urls.length === 0) {
-            console.log('[proxy-pool] empty list');
+            console.log('[proxy-pool] empty merged list');
             return;
         }
         const ipToUrls = new Map();
@@ -369,34 +403,45 @@ function pickNextProxy(tried) {
  * @param {import('undici').RequestInit} init
  */
 async function fetchThroughPool(url, init) {
-    if (pool.length === 0) {
-        await scheduleRefresh();
-    }
-    const maxTries = Math.min(16, Math.max(2, pool.length + 6));
-    const tried = new Set();
-    for (let t = 0; t < maxTries; t++) {
-        if (pool.length === 0) break;
-        const entry = pickNextProxy(tried);
-        if (!entry) break;
-        tried.add(entry.url);
-        try {
-            const dispatcher = new ProxyAgent(entry.url);
-            const res = await undiciFetch(url, { ...init, dispatcher });
-            if (res.status === 403 || res.status === 503 || res.status === 429) {
-                const snippet = await res.clone().text();
-                if (responseLooksCfBlocked(res, snippet)) {
-                    pool = pool.filter((p) => p.url !== entry.url);
-                    nextPickCursor = nextPickCursor % Math.max(pool.length, 1);
-                    continue;
-                }
-            }
-            const i = pool.findIndex((p) => p.url === entry.url);
-            if (i >= 0) pool[i].successes = (pool[i].successes || 0) + 1;
-            return res;
-        } catch {
-            pool = pool.filter((p) => p.url !== entry.url);
-            nextPickCursor = nextPickCursor % Math.max(pool.length, 1);
+    for (let cycle = 0; cycle < 2; cycle++) {
+        if (pool.length === 0) {
+            await scheduleRefresh();
         }
+        const maxTries = Math.min(24, Math.max(4, pool.length + 8));
+        const tried = new Set();
+        for (let t = 0; t < maxTries; t++) {
+            if (pool.length === 0) break;
+            const entry = pickNextProxy(tried);
+            if (!entry) break;
+            tried.add(entry.url);
+            try {
+                const dispatcher = new ProxyAgent(entry.url);
+                const res = await undiciFetch(url, { ...init, dispatcher });
+                if (res.status === 403 || res.status === 503 || res.status === 429) {
+                    const snippet = await res.clone().text();
+                    if (responseLooksCfBlocked(res, snippet)) {
+                        pool = pool.filter((p) => p.url !== entry.url);
+                        nextPickCursor = nextPickCursor % Math.max(pool.length, 1);
+                        continue;
+                    }
+                }
+                const i = pool.findIndex((p) => p.url === entry.url);
+                if (i >= 0) pool[i].successes = (pool[i].successes || 0) + 1;
+                return res;
+            } catch {
+                pool = pool.filter((p) => p.url !== entry.url);
+                nextPickCursor = nextPickCursor % Math.max(pool.length, 1);
+            }
+        }
+        if (directFallbackWhenEmpty()) {
+            break;
+        }
+        if (cycle === 0 && embyProxyPoolGateActive()) {
+            console.warn('[proxy-pool] pool exhausted for this request; forcing full refresh and one retry');
+            await refreshPool();
+            continue;
+        }
+        break;
     }
     if (embyProxyPoolGateActive() && pool.length === 0) {
         scheduleEmptyPoolRetry();
@@ -429,7 +474,8 @@ function startFreeProxyPoolLoop() {
         scheduleRefresh();
     }, REFRESH_MS);
     const iv = REFRESH_MS >= 3600000 ? `${REFRESH_MS / 3600000}h` : `${REFRESH_MS / 1000}s`;
-    console.log(`[proxy-pool] scheduled refresh every ${iv} → ${LIST_URL.split('/').slice(-2).join('/')}`);
+    const n = listUrlsFromEnv().length;
+    console.log(`[proxy-pool] scheduled refresh every ${iv} (${n} list source(s))`);
 }
 
 module.exports = {
