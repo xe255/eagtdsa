@@ -24,9 +24,27 @@ function createEmbyFetch() {
     );
     if (EMBY_API_FETCH_BASE_SET && !forceProxyWithRelay) {
         console.log(
-            '[embyil] Emby API client: direct HTTPS to EMBY_API_FETCH_BASE (relay / alternate API host — trusted list & FREE_PROXY_POOL skipped). Remove EMBY_API_FETCH_BASE to use EMBY_PROXY_LIST_* again.'
+            '[embyil] Emby API client: direct HTTPS to EMBY_API_FETCH_BASE (relay / alternate API host — ZenRows & trusted list & FREE_PROXY_POOL skipped). Remove EMBY_API_FETCH_BASE to use ZENROWS_API_KEY or EMBY_PROXY_LIST_* again.'
         );
         return globalThis.fetch.bind(globalThis);
+    }
+
+    const zenKey = (process.env.ZENROWS_API_KEY || '').trim();
+    if (zenKey) {
+        try {
+            const zr = require('./zenrows-fetch');
+            const pv = process.env.ZENROWS_PREMIUM_PROXY;
+            const prem =
+                pv === undefined || String(pv).trim() === ''
+                    ? true
+                    : /^1|true|yes|on$/i.test(String(pv).trim());
+            console.log(
+                `[embyil] Emby API client: ZenRows Universal API (residential: ${prem ? 'on (ZENROWS_PREMIUM_PROXY)' : 'off'})`
+            );
+            return (reqUrl, init) => zr.fetchThrough(reqUrl, init);
+        } catch (e) {
+            console.warn('[embyil] zenrows-fetch failed to load:', e.message);
+        }
     }
 
     const proxy = (
