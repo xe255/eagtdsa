@@ -149,6 +149,11 @@ function clarifyFetchError(err) {
                 'אימות פרוקסי נכשל (SOCKS/HTTP): עדכן את הרשימה מ-Webshare או בדוק שורות host:port:user:pass. נסה EMBY_TRUSTED_PROXY_PROTOCOL=http אם הפרוקסי הוא HTTP ולא SOCKS. אם גם אז יש רק 403 — Cloudflare חוסם יציאת דאטאסנטר; אז relay ביתי + EMBY_API_FETCH_BASE.'
             );
         }
+        if (/timed out|abort|cancel/i.test(msg)) {
+            return new Error(
+                'פרוקסי SOCKS איטי או נתקע — הבקשה בוטלה אחרי timeout. הגדל ב-Render את EMBY_PROXY_REQUEST_TIMEOUT_MS (ברירת מחדל 30000) או הסר מהרשימה את הכתובת הבעייתית. אם רוב השורות מקבלות 403 מ-Cloudflare, relay ביתי + EMBY_API_FETCH_BASE עדיין נדרש.'
+            );
+        }
         return new Error(
             'פרוקסי מקובץ (Webshare וכד׳) נכשלו בכל הניסיונות לבקשה זו. אם Cloudflare חוסם את כל כתובות היציאה — השתמש ב-relay ביתי: הרץ scripts/emby-api-relay.js + מנהרת trycloudflare, הגדר ב-Render את EMBY_API_FETCH_BASE והסר את רשימת הפרוקסי (אחרת המנהרה לא תופעל). אפשר גם להגדיל EMBY_PROXY_LIST_MAX_TRIES אם חלק מהכתובות עובדות.'
         );

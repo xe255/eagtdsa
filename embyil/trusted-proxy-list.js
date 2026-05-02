@@ -139,6 +139,12 @@ async function fetchViaSocksProxy(proxyUrl, url, init) {
         return res;
     } catch (e) {
         clearTimeout(to);
+        const m = String((e && e.message) || e);
+        if ((e && e.name === 'AbortError') || /cancel/i.test(m)) {
+            throw new Error(
+                `SOCKS aborted or timed out after ${REQUEST_TIMEOUT_MS}ms (${proxyLabel(proxyUrl)})`
+            );
+        }
         throw e;
     }
 }
@@ -194,6 +200,11 @@ async function fetchThrough(url, init) {
             if (/authentication failed|not authorized|invalid credentials/i.test(lastErr)) {
                 console.warn(
                     '[trusted-proxy-list] hint: SOCKS/HTTP auth rejected — refresh proxy list in Webshare, check user:pass lines, or try EMBY_TRUSTED_PROXY_PROTOCOL=http'
+                );
+            }
+            if (/timed out|abort|cancel/i.test(lastErr)) {
+                console.warn(
+                    `[trusted-proxy-list] hint: slow or stuck proxy — increase EMBY_PROXY_REQUEST_TIMEOUT_MS (now ${REQUEST_TIMEOUT_MS}ms) or remove that endpoint from the list`
                 );
             }
             idx = (idx + 1) % n;
