@@ -1,0 +1,1 @@
+import{k as t,l as n}from"./index-D9HWGQmR.js";const s=()=>{const{mutateAsync:u}=t({mutationFn:n.auth.signup}),o=t({mutationFn:n.auth.confirmAccount});return{signUpMutate:u,confirmAccount:o}};export{s as u};

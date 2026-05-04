@@ -20,6 +20,9 @@ const {
     updateUserLimit,
     getExpiringAccounts,
     markNotificationSent,
+    getAppSettings,
+    setAccountLimit,
+    setTrialDurationDays,
     getBlacklist,
     addToBlacklist,
     removeFromBlacklist,
@@ -316,6 +319,7 @@ ADMIN_CHAT_IDS_ARRAY.forEach(adminId => {
             { command: 'stats', description: 'סטטיסטיקות' },
             { command: 'users', description: 'ניהול משתמשים' },
             { command: 'broadcast', description: 'שידור הודעה' },
+            { command: 'settings', description: 'הגדרות מערכת' },
             { command: 'blacklist', description: 'רשימה שחורה' }
         ],
         { scope: { type: 'chat', chat_id: adminId } }
@@ -354,6 +358,36 @@ function formatLastActivity(timestamp) {
     }
 }
 
+function buildAdminMenuMarkup() {
+    const creationOn = isCreationEnabled();
+    const wlOn = isWhitelistEnabled();
+    const settings = getAppSettings();
+    return {
+        inline_keyboard: [
+            [
+                { text: '📊 סטטיסטיקות', callback_data: 'admin_stats' },
+                { text: '👥 משתמשים', callback_data: 'admin_users' }
+            ],
+            [
+                { text: '📢 שידור הודעה', callback_data: 'admin_broadcast' },
+                { text: '💼 חשבונות', callback_data: 'admin_accounts' }
+            ],
+            [
+                { text: '🔍 חיפוש משתמש', callback_data: 'admin_search_user' },
+                { text: '🚫 חסומים', callback_data: 'admin_blacklist' }
+            ],
+            [
+                { text: creationOn ? '🟢 יצירה: פעיל' : '🔴 יצירה: כבוי', callback_data: 'admin_toggle_creation' },
+                { text: `⚙️ הגדרות (${settings.accountLimit}/${settings.trialDurationDays}d)`, callback_data: 'admin_settings' }
+            ],
+            [
+                { text: wlOn ? '🟢 רשימה לבנה: פעיל' : '⚪ רשימה לבנה: כבוי', callback_data: 'admin_toggle_whitelist' },
+                { text: '📋 רשימה לבנה', callback_data: 'admin_whitelist' }
+            ]
+        ]
+    };
+}
+
 // Help Command
 bot.onText(/\/help/, async (msg) => {
     const chatId = msg.chat.id;
@@ -386,7 +420,7 @@ bot.onText(/\/help/, async (msg) => {
 4️⃣ השתמש בחשבון ב-Emby
 
 <b>מגבלות:</b>
-• עד 3 חשבונות פעילים בו-זמנית
+• עד ${getAppSettings().accountLimit} חשבונות פעילים בו-זמנית
 
 <b>תמיכה טכנית:</b>
 אם נתקלת בבעיה, פנה למנהל הבוט.
@@ -402,6 +436,7 @@ bot.onText(/\/help/, async (msg) => {
 /users - רשימת משתמשים
 /blacklist - רשימה שחורה
 /accounts - סטטוס חשבונות
+/settings - הגדרות מערכת
 /broadcast - שידור הודעה
 
 <b>פאנל האדמין כולל:</b>
@@ -503,35 +538,9 @@ bot.onText(/\/admin/, async (msg) => {
 ━━━━━━━━━━━━━━━━━━━━
     `;
     
-    const creationOn = isCreationEnabled();
-    const wlOn = isWhitelistEnabled();
-    const keyboard = {
-        inline_keyboard: [
-            [
-                { text: '📊 סטטיסטיקות', callback_data: 'admin_stats' },
-                { text: '👥 משתמשים', callback_data: 'admin_users' }
-            ],
-            [
-                { text: '📢 שידור הודעה', callback_data: 'admin_broadcast' },
-                { text: '💼 חשבונות', callback_data: 'admin_accounts' }
-            ],
-            [
-                { text: '🔍 חיפוש משתמש', callback_data: 'admin_search_user' },
-                { text: '🚫 חסומים', callback_data: 'admin_blacklist' }
-            ],
-            [
-                { text: creationOn ? '🟢 יצירה: פעיל' : '🔴 יצירה: כבוי', callback_data: 'admin_toggle_creation' },
-                { text: '📋 רשימה לבנה', callback_data: 'admin_whitelist' }
-            ],
-            [
-                { text: wlOn ? '🟢 רשימה לבנה: פעיל' : '⚪ רשימה לבנה: כבוי', callback_data: 'admin_toggle_whitelist' }
-            ]
-        ]
-    };
-    
     await bot.sendMessage(chatId, adminMenu, {
         parse_mode: 'HTML',
-        reply_markup: keyboard
+        reply_markup: buildAdminMenuMarkup()
     });
 });
 
@@ -851,11 +860,12 @@ bot.onText(/\/myaccounts/, async (msg) => {
         message += `📅 נוצר: ${new Date(acc.createdAt).toLocaleDateString('he-IL')}\n\n`;
     });
     
-    const activeCount = accounts.filter(a => a.active).length;
-    const remainingSlots = 3 - activeCount;
+    const activeCount = getAccountCount(chatId);
+    const accountLimit = getAppSettings().accountLimit;
+    const remainingSlots = Math.max(0, accountLimit - activeCount);
     
     message += `━━━━━━━━━━━━━━━━━━━━\n`;
-    message += `📊 סה"כ חשבונות פעילים: ${activeCount}/3\n`;
+    message += `📊 סה"כ חשבונות פעילים: ${activeCount}/${accountLimit}\n`;
     if (remainingSlots > 0) {
         message += `✅ ניתן ליצור עוד ${remainingSlots} חשבונות`;
     } else {
@@ -1051,8 +1061,10 @@ ${REQUIRED_GROUP_INVITE}
 async function sendMainMenu(chatId) {
     const accountCount = getAccountCount(chatId);
     const unlimited = isAdmin(chatId) || isUnlimitedUser(chatId);
-    const remainingSlots = unlimited ? Infinity : 3 - accountCount;
-    const slotsDisplay = unlimited ? '∞' : `${3 - accountCount}`;
+    const settings = getAppSettings();
+    const accountLimit = settings.accountLimit;
+    const remainingSlots = unlimited ? Infinity : Math.max(0, accountLimit - accountCount);
+    const slotsDisplay = unlimited ? '∞' : `${remainingSlots}`;
     const welcomeMessage = `
 🎬 <b>ברוכים הבאים ל-embyIL</b> 🎬
 
@@ -1061,12 +1073,12 @@ async function sendMainMenu(chatId) {
 🌟 <b>צור חשבון</b> — גישה מיידית לנגן Emby
 ⚡ תהליך הרשמה אוטומטי ומהיר
 📺 צפייה בכל המכשירים
-🛡️ ${unlimited ? 'חשבונות ללא הגבלה' : 'עד 3 חשבונות בו-זמנית'}
+🛡️ ${unlimited ? 'חשבונות ללא הגבלה' : `עד ${accountLimit} חשבונות בו-זמנית`}
 
 ━━━━━━━━━━━━━━━━━━━━
 
 📊 <b>הסטטיסטיקה שלך:</b>
-• חשבונות פעילים: ${accountCount}${unlimited ? '' : '/3'}
+• חשבונות פעילים: ${accountCount}${unlimited ? '' : `/${accountLimit}`}
 ${remainingSlots > 0 ? `• נותרו: ${slotsDisplay} חשבונות זמינים` : '• הגעת למגבלת החשבונות'}
 
 ━━━━━━━━━━━━━━━━━━━━
@@ -1096,6 +1108,51 @@ ${remainingSlots > 0 ? `• נותרו: ${slotsDisplay} חשבונות זמינ�
         });
     }
 }
+
+async function sendAdminSettings(chatId) {
+    const settings = getAppSettings();
+    const wl = getWhitelist();
+    const allUsers = getAllUsers();
+    const wlPreview = wl.slice(0, 10).map((entry, index) => {
+        const user = allUsers.find(u => String(u.chatId) === String(entry.chatId));
+        const name = user ? (user.firstName + (user.lastName ? ' ' + user.lastName : '')) : `ID ${entry.chatId}`;
+        return `${index + 1}. ${escapeHTML(name)} — <code>${entry.chatId}</code>`;
+    }).join('\n');
+
+    let message = `⚙️ <b>הגדרות מערכת</b>\n\n`;
+    message += `⏳ <b>ימי ניסיון:</b> ${settings.trialDurationDays}\n`;
+    message += `👥 <b>מגבלת חשבונות למשתמש:</b> ${settings.accountLimit}\n`;
+    message += `📋 <b>רשימה לבנה:</b> ${isWhitelistEnabled() ? 'פעילה' : 'כבויה'} (${wl.length} משתמשים)\n\n`;
+    if (wl.length > 0) {
+        message += `<b>משתמשים ברשימה הלבנה:</b>\n${wlPreview}`;
+        if (wl.length > 10) message += `\n<i>ועוד ${wl.length - 10} משתמשים...</i>`;
+        message += '\n\n';
+    } else {
+        message += `<i>אין כרגע משתמשים ברשימה הלבנה.</i>\n\n`;
+    }
+    message += `<i>בחר הגדרה לשינוי:</i>`;
+
+    await bot.sendMessage(chatId, message, {
+        parse_mode: 'HTML',
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '⏳ שנה ימי ניסיון', callback_data: 'admin_set_trial_days' }],
+                [{ text: '👥 שנה מגבלת חשבונות', callback_data: 'admin_set_account_limit' }],
+                [{ text: '📋 ניהול רשימה לבנה', callback_data: 'admin_whitelist' }],
+                [{ text: '🔙 חזרה לתפריט', callback_data: 'admin_menu' }]
+            ]
+        }
+    });
+}
+
+bot.onText(/\/settings/, async (msg) => {
+    const chatId = msg.chat.id;
+    if (!isAdmin(chatId)) {
+        await bot.sendMessage(chatId, '⛔ אין לך הרשאות.');
+        return;
+    }
+    await sendAdminSettings(chatId);
+});
 
 // Store admin conversation states
 const adminStates = new Map();
@@ -1198,12 +1255,13 @@ bot.on('callback_query', async (callbackQuery) => {
         // Check limits — admins are fully exempt
         const limitCheck = canCreateAccount(chatId, { skipLimits: isAdmin(chatId) });
         if (!limitCheck.allowed) {
+            const settings = getAppSettings();
             const accountCount = getAccountCount(chatId);
             const userAccounts = getUserAccounts(chatId);
             
             let limitMessage = `⚠️ <b>${limitCheck.message}</b>\n\n`;
             limitMessage += `📊 <b>סטטיסטיקה שלך:</b>\n`;
-            limitMessage += `• חשבונות פעילים: ${accountCount}/3\n\n`;
+            limitMessage += `• חשבונות פעילים: ${accountCount}/${settings.accountLimit}\n\n`;
             
             if (userAccounts.length > 0) {
                 limitMessage += `📋 <b>החשבונות שלך:</b>\n\n`;
@@ -1342,8 +1400,9 @@ bot.on('callback_query', async (callbackQuery) => {
             const account = addAccount(chatId, username, result);
             updateUserLimit(chatId);
             
+            const settings = getAppSettings();
             const accountCount = getAccountCount(chatId);
-            const remainingAccounts = 3 - accountCount;
+            const remainingAccounts = Math.max(0, settings.accountLimit - accountCount);
 
             const finalMessage = `
 <b>✅ ההרשמה הושלמה בהצלחה!</b>
@@ -1359,7 +1418,7 @@ bot.on('callback_query', async (callbackQuery) => {
 <b>כתובת הנגן:</b> https://play.embyil.tv/
 
 ━━━━━━━━━━━━━━━━━━━━
-📊 <b>חשבונות פעילים:</b> ${accountCount}/3
+📊 <b>חשבונות פעילים:</b> ${accountCount}/${settings.accountLimit}
 ${remainingAccounts > 0 ? `✅ <b>נותרו:</b> ${remainingAccounts} חשבונות` : '⚠️ הגעת למגבלת החשבונות'}
 ━━━━━━━━━━━━━━━━━━━━
       `;
@@ -1433,17 +1492,20 @@ ${remainingAccounts > 0 ? `✅ <b>נותרו:</b> ${remainingAccounts} חשבו�
             message += `📅 נוצר: ${new Date(acc.createdAt).toLocaleDateString('he-IL')}\n\n`;
         });
         
-        const activeCount = accounts.filter(a => a.active).length;
+        const activeCount = getAccountCount(chatId);
+        const accountLimit = getAppSettings().accountLimit;
+        const remainingSlots = Math.max(0, accountLimit - activeCount);
         message += `━━━━━━━━━━━━━━━━━━━━\n`;
-        message += `📊 סה"כ חשבונות פעילים: ${activeCount}/${accounts.length}`;
+        message += `📊 סה"כ חשבונות פעילים: ${activeCount}/${accountLimit}`;
         
+        const keyboard = [];
+        if (remainingSlots > 0) {
+            keyboard.push([{ text: '🔄 צור חשבון נוסף', callback_data: 'create_account' }]);
+        }
+
         await bot.sendMessage(chatId, message, { 
             parse_mode: 'HTML',
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: '🔄 צור חשבון נוסף', callback_data: 'create_account' }]
-                ]
-            }
+            reply_markup: keyboard.length > 0 ? { inline_keyboard: keyboard } : undefined
         });
     }
     
@@ -2016,6 +2078,36 @@ ${REQUIRED_GROUP_ID ? `<i>כולל חברי הקבוצה במעקב (הצטרפ�
             
             await bot.sendMessage(chatId, '📝 <b>הזן את הטקסט של הכפתור:</b>\n(לדוגמה: "הצטרף לערוץ 👀")', { parse_mode: 'HTML' });
         }
+
+        else if (data === 'admin_settings') {
+            await bot.answerCallbackQuery(callbackQuery.id);
+            adminStates.delete(chatId);
+            await sendAdminSettings(chatId);
+        }
+
+        else if (data === 'admin_set_trial_days') {
+            await bot.answerCallbackQuery(callbackQuery.id);
+            adminStates.set(chatId, { action: 'settings_trial_days' });
+            await bot.sendMessage(chatId,
+                '⏳ <b>הזן מספר ימי ניסיון חדש</b>\n\nלדוגמה: <code>1</code> לחשבון שפג אחרי יום אחד.\n\n<i>שלח "ביטול" לביטול.</i>',
+                {
+                    parse_mode: 'HTML',
+                    reply_markup: { inline_keyboard: [[{ text: '❌ ביטול', callback_data: 'admin_settings' }]] }
+                }
+            );
+        }
+
+        else if (data === 'admin_set_account_limit') {
+            await bot.answerCallbackQuery(callbackQuery.id);
+            adminStates.set(chatId, { action: 'settings_account_limit' });
+            await bot.sendMessage(chatId,
+                '👥 <b>הזן מגבלת חשבונות חדשה למשתמש</b>\n\nלדוגמה: <code>1</code> כדי שכל משתמש יוכל להחזיק חשבון פעיל אחד עד שהוא פג.\n\n<i>שלח "ביטול" לביטול.</i>',
+                {
+                    parse_mode: 'HTML',
+                    reply_markup: { inline_keyboard: [[{ text: '❌ ביטול', callback_data: 'admin_settings' }]] }
+                }
+            );
+        }
         
         else if (data === 'admin_whitelist') {
             await bot.answerCallbackQuery(callbackQuery.id);
@@ -2116,6 +2208,7 @@ ${REQUIRED_GROUP_ID ? `<i>כולל חברי הקבוצה במעקב (הצטרפ�
             
             try {
                 await bot.answerCallbackQuery(callbackQuery.id);
+                adminStates.delete(chatId);
                 
                 const adminMenu = `
 🔐 <b>פאנל אדמין - EmbyIL Bot</b>
@@ -2134,35 +2227,9 @@ ${REQUIRED_GROUP_ID ? `<i>כולל חברי הקבוצה במעקב (הצטרפ�
 ━━━━━━━━━━━━━━━━━━━━
                 `;
                 
-                const creationOnCb = isCreationEnabled();
-                const wlOnCb = isWhitelistEnabled();
-                const keyboard = {
-                    inline_keyboard: [
-                        [
-                            { text: '📊 סטטיסטיקות', callback_data: 'admin_stats' },
-                            { text: '👥 משתמשים', callback_data: 'admin_users' }
-                        ],
-                        [
-                            { text: '📢 שידור הודעה', callback_data: 'admin_broadcast' },
-                            { text: '💼 חשבונות', callback_data: 'admin_accounts' }
-                        ],
-                        [
-                            { text: '🔍 חיפוש משתמש', callback_data: 'admin_search_user' },
-                            { text: '🚫 חסומים', callback_data: 'admin_blacklist' }
-                        ],
-                        [
-                            { text: creationOnCb ? '🟢 יצירה: פעיל' : '🔴 יצירה: כבוי', callback_data: 'admin_toggle_creation' },
-                            { text: '📋 רשימה לבנה', callback_data: 'admin_whitelist' }
-                        ],
-                        [
-                            { text: wlOnCb ? '🟢 רשימה לבנה: פעיל' : '⚪ רשימה לבנה: כבוי', callback_data: 'admin_toggle_whitelist' }
-                        ]
-                    ]
-                };
-                
                 await bot.sendMessage(chatId, adminMenu, {
                     parse_mode: 'HTML',
-                    reply_markup: keyboard
+                    reply_markup: buildAdminMenuMarkup()
                 });
                 
             } catch (error) {
@@ -2244,6 +2311,36 @@ bot.on('message', async (msg) => {
                 reply_markup: {
                     inline_keyboard: [[{ text: '🔙 חזרה לתפריט', callback_data: 'admin_menu' }]]
                 }
+            });
+            return;
+        }
+
+        else if (state.action === 'settings_trial_days') {
+            const days = parseInt((text || '').trim(), 10);
+            if (!Number.isFinite(days) || days < 1) {
+                await bot.sendMessage(chatId, '❌ הזן מספר ימים תקין, 1 ומעלה.', { parse_mode: 'HTML' });
+                return;
+            }
+            const settings = setTrialDurationDays(days);
+            adminStates.delete(chatId);
+            await bot.sendMessage(chatId, `✅ ימי הניסיון עודכנו ל-<b>${settings.trialDurationDays}</b>.`, {
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: [[{ text: '⚙️ חזרה להגדרות', callback_data: 'admin_settings' }]] }
+            });
+            return;
+        }
+
+        else if (state.action === 'settings_account_limit') {
+            const limit = parseInt((text || '').trim(), 10);
+            if (!Number.isFinite(limit) || limit < 1) {
+                await bot.sendMessage(chatId, '❌ הזן מגבלת חשבונות תקינה, 1 ומעלה.', { parse_mode: 'HTML' });
+                return;
+            }
+            const settings = setAccountLimit(limit);
+            adminStates.delete(chatId);
+            await bot.sendMessage(chatId, `✅ מגבלת החשבונות עודכנה ל-<b>${settings.accountLimit}</b> חשבונות פעילים למשתמש.`, {
+                parse_mode: 'HTML',
+                reply_markup: { inline_keyboard: [[{ text: '⚙️ חזרה להגדרות', callback_data: 'admin_settings' }]] }
             });
             return;
         }
@@ -2579,11 +2676,12 @@ app.get('/api/chats/:chatId', (req, res) => {
 app.get('/api/accounts/:chatId', (req, res) => {
     const accounts = getUserAccounts(req.params.chatId);
     const accountCount = getAccountCount(req.params.chatId);
+    const accountLimit = getAppSettings().accountLimit;
     res.json({
         accounts: accounts,
         activeCount: accountCount,
-        limit: 3,
-        remainingSlots: 3 - accountCount
+        limit: accountLimit,
+        remainingSlots: Math.max(0, accountLimit - accountCount)
     });
 });
 
@@ -2596,12 +2694,13 @@ app.get('/api/all-accounts', (req, res) => {
     const allAccountsData = {};
     Object.keys(data.accounts).forEach(chatId => {
         const accounts = data.accounts[chatId];
-        const activeCount = accounts.filter(a => a.active).length;
+        const activeCount = getAccountCount(chatId);
+        const accountLimit = getAppSettings().accountLimit;
         allAccountsData[chatId] = {
             accounts: accounts,
             activeCount: activeCount,
-            limit: 3,
-            remainingSlots: 3 - activeCount
+            limit: accountLimit,
+            remainingSlots: Math.max(0, accountLimit - activeCount)
         };
     });
     

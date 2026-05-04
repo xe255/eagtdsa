@@ -7,5 +7,12 @@
   "blacklist": [],
   "progress": {},
   "accounts": {},
-  "userLimits": {}
+  "userLimits": {},
+  "creationEnabled": true,
+  "whitelist": [],
+  "whitelistEnabled": false,
+  "settings": {
+    "accountLimit": 3,
+    "trialDurationDays": 3
+  }
 }

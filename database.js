@@ -16,6 +16,28 @@ function resolveDbPath() {
 
 const DB_PATH = resolveDbPath();
 
+function parsePositiveInt(value, fallback, { min = 1, max = 3650 } = {}) {
+    const n = parseInt(value, 10);
+    if (!Number.isFinite(n) || n < min) return fallback;
+    return Math.min(n, max);
+}
+
+function getDefaultSettings() {
+    return {
+        accountLimit: parsePositiveInt(process.env.MAX_ACCOUNTS_PER_USER, 3, { min: 1, max: 1000 }),
+        trialDurationDays: parsePositiveInt(process.env.TRIAL_DURATION_DAYS, 3, { min: 1, max: 3650 })
+    };
+}
+
+function normalizeSettings(settings) {
+    const defaults = getDefaultSettings();
+    const source = settings && typeof settings === 'object' && !Array.isArray(settings) ? settings : {};
+    return {
+        accountLimit: parsePositiveInt(source.accountLimit, defaults.accountLimit, { min: 1, max: 1000 }),
+        trialDurationDays: parsePositiveInt(source.trialDurationDays, defaults.trialDurationDays, { min: 1, max: 3650 })
+    };
+}
+
 function createDefaultDb() {
     return {
         logs: [],
@@ -30,6 +52,7 @@ function createDefaultDb() {
         creationEnabled: true,
         whitelist: [],
         whitelistEnabled: false,
+        settings: getDefaultSettings(),
         broadcasts: [],
         broadcastExclusion: [],
         groupMembers: {}
@@ -54,6 +77,17 @@ function ensureDbShape(data) {
     if (data.creationEnabled === undefined) { data.creationEnabled = true; changed = true; }
     if (!data.whitelist) { data.whitelist = []; changed = true; }
     if (data.whitelistEnabled === undefined) { data.whitelistEnabled = false; changed = true; }
+    const normalizedSettings = normalizeSettings(data.settings);
+    if (
+        !data.settings ||
+        typeof data.settings !== 'object' ||
+        Array.isArray(data.settings) ||
+        data.settings.accountLimit !== normalizedSettings.accountLimit ||
+        data.settings.trialDurationDays !== normalizedSettings.trialDurationDays
+    ) {
+        data.settings = normalizedSettings;
+        changed = true;
+    }
     if (!data.broadcasts) { data.broadcasts = []; changed = true; }
     if (!data.broadcastExclusion) { data.broadcastExclusion = []; changed = true; }
     if (!data.groupMembers || typeof data.groupMembers !== 'object' || Array.isArray(data.groupMembers)) {
@@ -464,11 +498,12 @@ function addAccount(chatId, username, accountData) {
     const data = getLogs();
     if (!data.accounts) data.accounts = {};
     if (!data.accounts[chatId]) data.accounts[chatId] = [];
+    const settings = normalizeSettings(data.settings);
     
     const account = {
         id: Date.now(),
         createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 1 * 24 * 60 * 60 * 1000).toISOString(), // 1 day
+        expiresAt: new Date(Date.now() + settings.trialDurationDays * 24 * 60 * 60 * 1000).toISOString(),
         accountEmail: accountData.accountEmail,
         accountPassword: accountData.accountPassword || null,
         embyUsername: accountData.embyUsername,
@@ -483,20 +518,49 @@ function addAccount(chatId, username, accountData) {
     return account;
 }
 
+function isAccountActive(account, now = new Date()) {
+    if (!account || account.active === false) return false;
+    const expiresAt = new Date(account.expiresAt);
+    if (isNaN(expiresAt.getTime())) return account.active !== false;
+    return expiresAt > now;
+}
+
+function refreshExpiredAccounts(data, chatId = null) {
+    if (!data.accounts) return false;
+    const now = new Date();
+    let changed = false;
+    const keys = chatId == null ? Object.keys(data.accounts) : [String(chatId)];
+    keys.forEach((key) => {
+        const accounts = data.accounts[key];
+        if (!Array.isArray(accounts)) return;
+        accounts.forEach((account) => {
+            if (account.active !== false && !isAccountActive(account, now)) {
+                account.active = false;
+                changed = true;
+            }
+        });
+    });
+    return changed;
+}
+
 function getUserAccounts(chatId) {
     const data = getLogs();
     if (!data.accounts || !data.accounts[chatId]) return [];
+    if (refreshExpiredAccounts(data, chatId)) {
+        persistDb(data);
+    }
     return data.accounts[chatId];
 }
 
 function getAccountCount(chatId) {
     const accounts = getUserAccounts(chatId);
-    return accounts.filter(acc => acc.active).length;
+    return accounts.filter(acc => isAccountActive(acc)).length;
 }
 
 function canCreateAccount(chatId, { skipLimits = false } = {}) {
-    const MAX_ACCOUNTS = 3;
     const COOLDOWN_MINUTES = 5;
+    const settings = getAppSettings();
+    const maxAccounts = settings.accountLimit;
 
     // Admins and unlimited users bypass all restrictions
     if (skipLimits || isUnlimitedUser(chatId)) {
@@ -510,11 +574,11 @@ function canCreateAccount(chatId, { skipLimits = false } = {}) {
     const accountCount = getAccountCount(chatId);
     
     // Check max accounts limit
-    if (accountCount >= MAX_ACCOUNTS) {
+    if (accountCount >= maxAccounts) {
         return { 
             allowed: false, 
             reason: 'max_accounts',
-            message: `הגעת למגבלת ${MAX_ACCOUNTS} חשבונות. אנא המתן שחשבון קיים יפוג.`
+            message: `הגעת למגבלת ${maxAccounts} חשבונות. אנא המתן שחשבון קיים יפוג.`
         };
     }
     
@@ -554,10 +618,17 @@ function getExpiringAccounts() {
     
     const now = new Date();
     const expiringAccounts = [];
+    let changed = false;
     
     Object.keys(data.accounts).forEach(chatId => {
         data.accounts[chatId].forEach(account => {
-            if (!account.active) return;
+            if (!isAccountActive(account, now)) {
+                if (account.active !== false) {
+                    account.active = false;
+                    changed = true;
+                }
+                return;
+            }
             
             const expiresAt = new Date(account.expiresAt);
             const hoursUntilExpiry = (expiresAt - now) / (1000 * 60 * 60);
@@ -574,12 +645,12 @@ function getExpiringAccounts() {
             // Mark as inactive if expired
             if (hoursUntilExpiry <= 0) {
                 account.active = false;
+                changed = true;
             }
         });
     });
     
-    if (expiringAccounts.length > 0 || Object.keys(data.accounts).some(chatId => 
-        data.accounts[chatId].some(acc => !acc.active && acc.active !== false))) {
+    if (expiringAccounts.length > 0 || changed) {
         persistDb(data);
     }
     
@@ -598,6 +669,42 @@ function markNotificationSent(chatId, accountId) {
 }
 
 // Admin Functions
+function getAppSettings() {
+    const data = getLogs();
+    const normalized = normalizeSettings(data.settings);
+    if (
+        !data.settings ||
+        data.settings.accountLimit !== normalized.accountLimit ||
+        data.settings.trialDurationDays !== normalized.trialDurationDays
+    ) {
+        data.settings = normalized;
+        persistDb(data);
+    }
+    return { ...normalized };
+}
+
+function setAccountLimit(limit) {
+    const data = getLogs();
+    const current = normalizeSettings(data.settings);
+    data.settings = {
+        ...current,
+        accountLimit: parsePositiveInt(limit, current.accountLimit, { min: 1, max: 1000 })
+    };
+    persistDb(data);
+    return { ...data.settings };
+}
+
+function setTrialDurationDays(days) {
+    const data = getLogs();
+    const current = normalizeSettings(data.settings);
+    data.settings = {
+        ...current,
+        trialDurationDays: parsePositiveInt(days, current.trialDurationDays, { min: 1, max: 3650 })
+    };
+    persistDb(data);
+    return { ...data.settings };
+}
+
 function getBlacklist() {
     const data = getLogs();
     return data.blacklist || [];
@@ -663,8 +770,9 @@ function getStats() {
         l.action === 'create_account' && l.status === 'failed'
     );
     
-    const totalAccounts = Object.values(data.accounts || {}).reduce((sum, userAccounts) => 
-        sum + userAccounts.filter(a => a.active).length, 0
+    if (refreshExpiredAccounts(data)) persistDb(data);
+    const totalAccounts = Object.values(data.accounts || {}).reduce((sum, userAccounts) =>
+        sum + userAccounts.filter(a => isAccountActive(a)).length, 0
     );
     
     return {
@@ -1119,6 +1227,9 @@ module.exports = {
     updateUserLimit,
     getExpiringAccounts,
     markNotificationSent,
+    getAppSettings,
+    setAccountLimit,
+    setTrialDurationDays,
     // Admin functions
     getBlacklist,
     addToBlacklist,
