@@ -175,7 +175,7 @@ function clarifyFetchError(err) {
         }
         if (/timed out|abort|cancel/i.test(msg)) {
             return new Error(
-                'פרוקסי SOCKS איטי או נתקע — הבקשה בוטלה אחרי timeout. הגדל ב-Render את EMBY_PROXY_REQUEST_TIMEOUT_MS (ברירת מחדל 30000) או הסר מהרשימה את הכתובת הבעייתית. אם רוב השורות מקבלות 403 מ-Cloudflare, relay ביתי + EMBY_API_FETCH_BASE עדיין נדרש.'
+                'פרוקסי איטי או נתקע — הבקשה בוטלה אחרי timeout. לפרוקסי HTTP (מומלץ ל-Webshare): הגדר ב-Render את EMBY_TRUSTED_PROXY_PROTOCOL=http. הגדל EMBY_PROXY_REQUEST_TIMEOUT_MS (ברירת מחדל 30000) או הסר מהרשימה כתובות בעייתיות. אם רוב השורות מקבלות 403 מ-Cloudflare — relay ביתי + EMBY_API_FETCH_BASE.'
             );
         }
         return new Error(
